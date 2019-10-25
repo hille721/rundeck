@@ -610,6 +610,10 @@ class ScheduledExecutionController  extends ControllerBase{
     }
 
     public def apiJobWorkflow (){
+        if (!apiService.requireApi(request, response)) {
+            return
+        }
+
         if (!apiService.requireVersion(request, response, ApiVersions.V33)) {
             return
         }
@@ -635,7 +639,10 @@ class ScheduledExecutionController  extends ControllerBase{
                 ),
                 AuthConstants.ACTION_VIEW, 'Job', params.id
         )) {
-            return
+            return apiService.renderErrorFormat(response, [status: HttpServletResponse.SC_FORBIDDEN,
+                                                           code  : 'api.error.item.unauthorized', args: ['Run', 'Job ' +
+                    'ID', jobid]]
+            )
         }
         def maxDepth=3
 
