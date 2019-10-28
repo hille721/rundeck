@@ -640,7 +640,7 @@ class ScheduledExecutionController  extends ControllerBase{
                 AuthConstants.ACTION_VIEW, 'Job', params.id
         )) {
             return apiService.renderErrorFormat(response, [status: HttpServletResponse.SC_FORBIDDEN,
-                                                           code  : 'api.error.item.unauthorized', args: ['Run', 'Job ' +
+                                                           code  : 'api.error.item.unauthorized', args: ['View', 'Job ' +
                     'ID', jobid]]
             )
         }
