@@ -614,7 +614,7 @@ class ScheduledExecutionController  extends ControllerBase{
             return
         }
 
-        if (!apiService.requireVersion(request, response, ApiVersions.V33)) {
+        if (!apiService.requireVersion(request, response, ApiVersions.V34)) {
             return
         }
 

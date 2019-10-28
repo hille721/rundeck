@@ -72,7 +72,7 @@ class ScheduledExecutionControllerSpec extends Specification {
         controller.scheduledExecutionService = Mock(ScheduledExecutionService)
 
         when:
-        request.api_version = 33
+        request.api_version = 34
         request.method = 'GET'
         params.id = job.extid
         def result = controller.apiJobWorkflow()
