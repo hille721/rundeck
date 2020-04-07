@@ -140,7 +140,25 @@
                     </div>
                 </div>
                 </g:if>
+                <g:if test="${jobQueryComponents}">
+                <g:each in="${jobQueryComponents}" var="component">
+                    <g:if test="${component.value.queryProperties}">
+                        <g:each in="${component.value.queryProperties}" var="properties">
+                              <g:render template="/framework/pluginConfigPropertiesInputs" model="${[
+                                    properties         : properties,
+                                    report             : null,
+                                    prefix             : '',
+                                    values             : params,
+                                    fieldnamePrefix    : '',
+                                    origfieldnamePrefix: 'orig.' ,
+                                    messagePrefix       :'',
+                                    messagesType       : 'job.query'
+                                ]}"/>
+                        </g:each>
+                    </g:if>
+                </g:each>
 
+                </g:if>
 
 
         </div>
@@ -500,10 +518,9 @@
                         <g:if test="${jobgroups}">
 
                             <g:timerStart key="groupTree"/>
-
-                    <g:render template="groupTree" model="${[jobExpandLevel:jobExpandLevel,small:params.compact?true:false,currentJobs:jobgroups['']?jobgroups['']:[],wasfiltered:wasfiltered?true:false, clusterMap: clusterMap,nextExecutions:nextExecutions,jobauthorizations:jobauthorizations,authMap:authMap,max:max,offset:offset,paginateParams:paginateParams,sortEnabled:true]}"/>
-
-
+                            <g:set var="projectExecutionModeActive" value="${g.executionMode(active:true,project:params.project ?: request.project)}"/>
+                            <g:set var="projectScheduleModeActive" value="${g.scheduleMode(active:true,project:params.project ?: request.project)}"/>
+                    <g:render template="groupTree" model="${[projectScheduleModeActive:projectScheduleModeActive,projectExecutionModeActive:projectExecutionModeActive,jobExpandLevel:jobExpandLevel,small:params.compact?true:false,currentJobs:jobgroups['']?jobgroups['']:[],wasfiltered:wasfiltered?true:false, clusterMap: clusterMap,nextExecutions:nextExecutions,jobauthorizations:jobauthorizations,authMap:authMap,max:max,offset:offset,paginateParams:paginateParams,sortEnabled:true]}"/>
                             <g:timerEnd key="groupTree"/>
                         </g:if>
                         </div>

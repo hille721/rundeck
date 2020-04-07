@@ -18,6 +18,10 @@
 import com.dtolabs.rundeck.app.support.QueueQuery
 import com.dtolabs.rundeck.core.authorization.AuthContext
 import com.dtolabs.rundeck.core.authorization.UserAndRolesAuthContext
+import com.dtolabs.rundeck.core.dispatcher.ExecutionState
+import com.dtolabs.rundeck.core.execution.workflow.NodeRecorder
+import com.dtolabs.rundeck.core.execution.workflow.steps.node.NodeStepResult
+import groovy.time.TimeCategory
 import org.rundeck.core.auth.AuthConstants
 import com.dtolabs.rundeck.core.common.Framework
 import com.dtolabs.rundeck.core.common.NodeEntryImpl
@@ -49,7 +53,9 @@ import org.rundeck.storage.api.PathUtil
 import org.rundeck.storage.api.StorageException
 import org.springframework.context.MessageSource
 import rundeck.*
+import rundeck.quartzjobs.ExecutionJob
 import rundeck.services.*
+import rundeck.services.logging.WorkflowStateFileLoader
 import spock.lang.Specification
 import spock.lang.Unroll
 
@@ -2144,6 +2150,40 @@ class ExecutionServiceSpec extends Specification implements ServiceUnitTest<Exec
 
     }
 
+    def "list should not consider postponed runs as running filter"() {
+        given:
+        def query = new QueueQuery()
+        Date now = new Date()
+        Date future = now
+        use(TimeCategory) {
+            future = future + 1.days
+            now = now - 1.hours
+        }
+        query.projFilter = 'AProject'
+        query.runningFilter = 'running'
+        query.considerPostponedRunsAsRunningFilter = false
+        def exec = new Execution(
+                dateStarted: now,
+                dateCompleted: null,
+                user: 'userB',
+                project: 'AProject'
+        ).save()
+        def exec2 = new Execution(
+                dateStarted: future,
+                dateCompleted: null,
+                user: 'user',
+                project: 'AProject',
+                status: 'scheduled'
+        ).save()
+        when:
+        def result = service.queryQueue(query)
+
+        then:
+        2 == result.total
+        1 == result.nowrunning.size()
+
+    }
+
     def "list now running for project includes scheduled"() {
         given:
         def query = new QueueQuery()
@@ -2496,6 +2536,7 @@ class ExecutionServiceSpec extends Specification implements ServiceUnitTest<Exec
         service.frameworkService = Mock(FrameworkService)
         service.reportService = Mock(ReportService)
         service.notificationService = Mock(NotificationService)
+        service.workflowService = Mock(WorkflowService)
         def job = new ScheduledExecution(
                 createJobParams(
                         scheduled: false,
@@ -2725,6 +2766,7 @@ class ExecutionServiceSpec extends Specification implements ServiceUnitTest<Exec
             1 * triggerJobNotification(_, _, _)
         }
         service.metricService = Mock(MetricService)
+        service.workflowService = Mock(WorkflowService)
         when:
         service.cleanupExecution(e, status)
         then:
@@ -4840,7 +4882,80 @@ class ExecutionServiceSpec extends Specification implements ServiceUnitTest<Exec
         1 * service.executionUtilService.runRefJobWithTimer(_, _, _, 3000)
         res instanceof StepExecutionResultImpl
         !res.success
+    }
 
+    def "Create execution context with global vars and option value replacement"() {
+        given:
+
+        service.frameworkService = Mock(FrameworkService) {
+            1 * filterNodeSet(null, 'testproj')
+            1 * filterAuthorizedNodes(*_)
+            1 * getProjectGlobals(*_) >> [a: 'b', c: 'd']
+            0 * _(*_)
+        }
+        service.storageService = Mock(StorageService) {
+            1 * storageTreeWithContext(_)
+        }
+        service.jobStateService = Mock(JobStateService) {
+            1 * jobServiceWithAuthContext(_)
+        }
+
+        Execution se = new Execution(
+                argString: "-test \${globals.a}",
+                user: "testuser",
+                project: "testproj",
+                loglevel: 'WARN',
+                doNodedispatch: false
+        )
+
+        when:
+        def val = service.createContext(se, null, null, null, null, null, null)
+        then:
+        val != null
+        val.dataContext.option.test == 'b'
+        val.nodeSelector == null
+        val.frameworkProject == "testproj"
+        "testuser" == val.user
+        1 == val.loglevel
+        !val.executionListener
+        val.dataContext.globals == [a: 'b', c: 'd']
+    }
+
+    def "Create execution context with global vars and option value replacement not found"() {
+        given:
+
+        service.frameworkService = Mock(FrameworkService) {
+            1 * filterNodeSet(null, 'testproj')
+            1 * filterAuthorizedNodes(*_)
+            1 * getProjectGlobals(*_) >> [a: 'b', c: 'd']
+            0 * _(*_)
+        }
+        service.storageService = Mock(StorageService) {
+            1 * storageTreeWithContext(_)
+        }
+        service.jobStateService = Mock(JobStateService) {
+            1 * jobServiceWithAuthContext(_)
+        }
+
+        Execution se = new Execution(
+                argString: "-test \${globals.test}",
+                user: "testuser",
+                project: "testproj",
+                loglevel: 'WARN',
+                doNodedispatch: false
+        )
+
+        when:
+        def val = service.createContext(se, null, null, null, null, null, null)
+        then:
+        val != null
+        val.dataContext.option.test == '\${globals.test}'
+        val.nodeSelector == null
+        val.frameworkProject == "testproj"
+        "testuser" == val.user
+        1 == val.loglevel
+        !val.executionListener
+        val.dataContext.globals == [a: 'b', c: 'd']
     }
 
     def "execute job with secure remote option changed by job life cycle" () {
@@ -5019,4 +5134,271 @@ class ExecutionServiceSpec extends Specification implements ServiceUnitTest<Exec
         e2.user == 'testuser'
     }
 
+    def "can read storage password using variables"() {
+        given:
+        AuthContext context = Mock(AuthContext)
+        service.storageService = Mock(StorageService)
+
+        when:
+        def result = service.canReadStoragePassword(context, path, false)
+
+        then:
+        service.storageService.storageTreeWithContext(context) >> Mock(KeyStorageTree) {
+            0 * hasPassword(path)
+        }
+        result == canread
+
+        where:
+        path                            | canread
+        'keys/${job.username}/password' | true
+
+    }
+
+
+
+    def "abort  run on aborted execution"(){
+        given:
+        def jobname = 'abc'
+        def group = 'path'
+        def project = 'AProject'
+        ScheduledExecution job = new ScheduledExecution(
+                jobName: jobname,
+                project: project,
+                groupPath: group,
+                description: 'a job',
+                argString: '-args b -args2 d',
+                workflow: new Workflow(
+                        keepgoing: true,
+                        commands: [new CommandExec(
+                                [adhocRemoteString: 'test buddy', argString: '-delay 12 -monkey cheese -particle']
+                        )]
+                ),
+                retry: '1'
+        )
+        job.save()
+        Execution e1 = new Execution(
+                project: project,
+                user: 'bob',
+                dateStarted: new Date(),
+                dateEnded: new Date(),
+                abortedby: 'admin'
+        )
+        e1.save() != null
+
+        def datacontext = [job:[execid:e1.id]]
+
+
+        def nodeSet = new NodeSetImpl()
+        def node1 = new NodeEntryImpl('node1')
+        nodeSet.putNode(node1)
+
+        service.fileUploadService = Mock(FileUploadService)
+        service.executionUtilService = Mock(ExecutionUtilService)
+        service.storageService = Mock(StorageService)
+        service.jobStateService = Mock(JobStateService)
+        service.frameworkService = Mock(FrameworkService) {
+            authorizeProjectJobAll(*_) >> true
+            filterAuthorizedNodes(_, _, _, _) >> { args ->
+                nodeSet
+            }
+        }
+        service.executionLifecyclePluginService = Mock(ExecutionLifecyclePluginService)
+
+
+        def origContext = Mock(StepExecutionContext){
+            getDataContext()>>datacontext
+            getStepNumber()>>1
+            getStepContext()>>[]
+            getNodes()>> nodeSet
+            getFramework() >> Mock(Framework)
+
+        }
+        JobRefCommand item = ExecutionItemFactory.createJobRef(
+                group+'/'+jobname,
+                ['args', 'args2'] as String[],
+                false,
+                null,
+                true,
+                '.*',
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                project,
+                false,
+                false,
+                null,
+                false,
+                false
+        )
+
+
+        service.notificationService = Mock(NotificationService)
+        def dispatcherResult = Mock(DispatcherResult)
+        def wresult = Mock(WorkflowExecutionResult){
+            isSuccess()>>success
+        }
+
+
+        service.metricService = Mock(MetricService){
+            withTimer(_,_,_)>>{classname, name,  closure ->
+                closure()
+                [result:wresult]
+            }
+        }
+
+        def createFailure = { FailureReason reason, String msg ->
+            return new StepExecutionResultImpl(null, reason, msg)
+        }
+        def createSuccess = {
+            return new StepExecutionResultImpl()
+        }
+        when:
+        service.runJobRefExecutionItem(origContext,item,createFailure,createSuccess)
+        then:
+        0 * service.notificationService.triggerJobNotification('start', _, _)
+        1 * service.notificationService.triggerJobNotification(trigger, _, _)
+        where:
+        success      | trigger
+        true         | 'success'
+        false        | 'failure'
+    }
+
+    def "use option vars on remoteurl validation"() {
+        given:
+        ScheduledExecution se = new ScheduledExecution()
+        Option opt = new Option(name: 'test1', enforced: true, optionValues: null)
+        se.addToOptions(opt)
+        service.scheduledExecutionService = Mock(ScheduledExecutionService)
+        when:
+
+        service.validateOptionValues(se, opts)
+
+        then:
+        1 * service.scheduledExecutionService.loadOptionsRemoteValues(_,
+                ['option':'test1', 'extra':['option':['test1':'Foo']]],_) >> {
+            [
+                    optionSelect : opt,
+                    values       : remoteValues,
+                    srcUrl       : "cleanUrl",
+                    err          : null
+            ]
+        }
+
+        noExceptionThrown()
+
+
+        where:
+        opts                                           | remoteValues
+        ['test1': 'Foo']                               | ["Foo", "Bar"]
+    }
+
+    def "get effective node succedeed list"(){
+        given:
+        def jobname = 'abc'
+        def group = 'path'
+        def project = 'AProject'
+        ScheduledExecution job = new ScheduledExecution(
+                jobName: jobname,
+                project: project,
+                groupPath: group,
+                description: 'a job',
+                argString: '-args b -args2 d',
+                workflow: new Workflow(
+                        keepgoing: true,
+                        commands: [new CommandExec(
+                                [adhocRemoteString: 'test buddy', argString: '-delay 12 -monkey cheese -particle']
+                        )]
+                ),
+                retry: '1'
+        )
+        job.save()
+        Execution e1 = new Execution(
+                project: project,
+                user: 'bob',
+                dateStarted: new Date(),
+                dateEnded: new Date(),
+                abortedby: 'admin',
+                workflow: job.workflow
+        )
+        e1.scheduledExecution = job
+        e1.save() != null
+
+        def nodeSet = new NodeSetImpl()
+        def node1 = new NodeEntryImpl('node1')
+        def node2 = new NodeEntryImpl('node2')
+        def node3 = new NodeEntryImpl('node3')
+
+        nodeSet.putNode(node1)
+        nodeSet.putNode(node2)
+        nodeSet.putNode(node3)
+
+        service.fileUploadService = Mock(FileUploadService)
+        service.executionUtilService = Mock(ExecutionUtilService)
+        service.storageService = Mock(StorageService)
+        service.jobStateService = Mock(JobStateService)
+        service.frameworkService = Mock(FrameworkService) {
+            authorizeProjectJobAll(*_) >> true
+            filterAuthorizedNodes(_, _, _, _) >> { args ->
+                nodeSet
+            }
+        }
+
+        service.executionLifecyclePluginService = Mock(ExecutionLifecyclePluginService)
+        service.workflowService = Mock(WorkflowService)
+        service.notificationService = Mock(NotificationService)
+        service.reportService = Mock(ReportService){
+            reportExecutionResult(_) >> [:]
+        }
+
+        HashSet<String> nodeNames = new HashSet<>(nodeSet.getNodeNames());
+        HashMap<String, NodeStepResult> failures = new HashMap<>();
+        NodeRecorder recorder = new NodeRecorder()
+        recorder.matchedNodes(nodeNames)
+
+        NodeStepResult result = Mock(NodeStepResult)
+
+        failureList.split(",").each {failedNode->
+            failures.put(failedNode, result)
+        }
+
+        recorder.nodesFailed(failures)
+
+        Map execmap = [
+                noderecorder      : recorder,
+                execution         : e1,
+                scheduledExecution: job
+        ]
+
+        Map<String, Object> failedNodes = ExecutionJob.extractFailedNodes(execmap)
+        Set<String> succeededNodes = ExecutionJob.extractSucceededNodes(execmap)
+
+        Map resultMap = [
+                status        : success? ExecutionState.succeeded.toString():ExecutionState.failed.toString(),
+                dateCompleted : new Date(),
+                cancelled     : false,
+                timedOut      : false,
+                failedNodes   : failedNodes?.keySet(),
+                failedNodesMap: failedNodes,
+                succeededNodes: succeededNodes,
+        ]
+
+
+        when:
+        service.saveExecutionState(job.id, e1.id, resultMap, execmap, [:])
+        then:
+
+        calls * service.workflowService.requestStateSummary(_,succeededNodes.toList()) >> new WorkflowStateFileLoader(workflowState: [nodeSummaries: nodeSummaries])
+
+        e1.succeededNodeList == effectiveSuccessNodeList?.join(",")
+
+        where:
+        failureList             | calls | nodeSummaries                                                                         |  effectiveSuccessNodeList      | success
+        "node2"                 | 1     | [node1: [summaryState:'SUCCEEDED'], node3: [summaryState:'PENDING']]                  |  ["node1"]                     | false
+        "node2,node3"           | 1     | [node1: [summaryState:'SUCCEEDED']]                                                   |  ["node1"]                     | false
+        "node1,node2,node3"     | 0     | []                                                                                    |  null                          | false
+        ""                      | 1     | [node1: [summaryState:'SUCCEEDED'], node2: [summaryState:'SUCCEEDED'], node3: [summaryState:'SUCCEEDED']]   | ["node2","node3","node1"] | true
+    }
 }

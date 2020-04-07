@@ -17,6 +17,7 @@ package webhooks
 
 class Webhook {
 
+    String uuid
     String name
     String project
     String authToken
@@ -25,6 +26,7 @@ class Webhook {
     boolean enabled = true
 
     static constraints = {
+        uuid(nullable: true)
         name(nullable: false)
         project(nullable: false)
         authToken(nullable: false)
@@ -33,5 +35,10 @@ class Webhook {
 
     static mapping = {
         pluginConfigurationJson type: 'text'
+    }
+
+    static String cleanAuthToken(String authtoken) {
+        if(authtoken.contains("#")) return authtoken.substring(0,authtoken.indexOf("#"))
+        return authtoken
     }
 }

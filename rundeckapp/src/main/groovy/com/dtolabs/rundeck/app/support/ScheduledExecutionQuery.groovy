@@ -17,6 +17,7 @@
 package com.dtolabs.rundeck.app.support
 
 import grails.validation.Validateable
+import org.rundeck.app.components.jobs.JobQueryInput
 
 /*
  * ScheduledExecutionQuery.java
@@ -25,7 +26,7 @@ import grails.validation.Validateable
  * Created: Feb 12, 2010 1:02:43 PM
  * $Id$
  */
-public class ScheduledExecutionQuery extends BaseQuery implements Validateable{
+public class ScheduledExecutionQuery extends BaseQuery implements JobQueryInput, Validateable{
 
     String jobFilter
     String jobExactFilter
@@ -42,6 +43,7 @@ public class ScheduledExecutionQuery extends BaseQuery implements Validateable{
     String serverNodeUUIDFilter
 
     Integer daysAhead
+    Boolean runJobLaterFilter
 
     /**
      * text filters
@@ -63,10 +65,17 @@ public class ScheduledExecutionQuery extends BaseQuery implements Validateable{
      * Boolean filters
      */
     public final static  BOOL_FILTERS=[
-            'scheduled':'scheduled',
             'executionEnabled':'executionEnabled',
             'scheduleEnabled':'scheduleEnabled',
             ]
+
+    /**
+     * Scheduled filter
+     */
+    public final static IS_SCHEDULED_FILTER = [
+            'scheduled':'scheduled'
+    ]
+
     /**
      * all filters
      */
@@ -76,6 +85,7 @@ public class ScheduledExecutionQuery extends BaseQuery implements Validateable{
             ALL_FILTERS.putAll(TEXT_FILTERS)
             ALL_FILTERS.putAll(EQ_FILTERS)
             ALL_FILTERS.putAll(BOOL_FILTERS)
+            ALL_FILTERS.putAll(IS_SCHEDULED_FILTER)
             X_FILTERS.putAll(ALL_FILTERS)
             X_FILTERS.put('group','groupPath')
     }
@@ -106,6 +116,7 @@ public class ScheduledExecutionQuery extends BaseQuery implements Validateable{
             }
         })
         daysAhead(nullable: true)
+        runJobLaterFilter(nullable: true)
     }
 
 

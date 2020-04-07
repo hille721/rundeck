@@ -70,6 +70,7 @@ public class NotificationService implements ApplicationContextAware{
     def LoggingService loggingService
     def apiService
     def executionService
+    def workflowService
     OrchestratorPluginService orchestratorPluginService
 
     def ValidatedPlugin validatePluginConfig(String project, String name, Map config) {
@@ -235,21 +236,9 @@ public class NotificationService implements ApplicationContextAware{
                             (ExecutionService.EXECUTION_TIMEDOUT):'TIMEDOUT',
                     ]
 
-                    //prep execution data
-                    def appUrl = grailsLinkGenerator.link(action: 'home', controller: 'menu',absolute: true)
-                    def projUrl = grailsLinkGenerator.link(action: 'index', controller: 'menu', params: [project:  exec.project], absolute: true)
-
-                    def execMap = generateExecutionData(exec, content)
-                    def jobMap=exportJobdata(source)
-                    Map context = generateContextData(exec, content)
-                    def contextMap=[:]
-                    execMap.projectHref = projUrl
-
-                    contextMap['job'] = toStringStringMap(jobMap)
-                    contextMap['execution']=toStringStringMap(execMap)
-                    contextMap['rundeck']=['href': appUrl]
-
-                    context = DataContextUtils.merge(context, contextMap)
+                    def execMap = null
+                    Map context = null
+                    (context, execMap) = generateNotificationContext(content.execution, content, source)
                     context = DataContextUtils.addContext("notification", [trigger: trigger, eventStatus: statMsg[state]], context)
 
                     def destarr=[]
@@ -484,12 +473,11 @@ public class NotificationService implements ApplicationContextAware{
                     }
                     didsend=!webhookfailure
                 }else if (n.type) {
-                    def Execution exec = content.execution
-                    def execMap = generateExecutionData(exec,content)
-                    def jobMap = exportJobdata(source)
-                    Map context=generateContextData(exec,content)
-                    execMap.job=jobMap
-                    execMap.context=context
+
+                    def execMap = null
+                    Map context = null
+                    (context, execMap) = generateNotificationContext(content.execution, content, source)
+
                     Map config= n.configuration
                     if (context && config) {
                         config = DataContextUtils.replaceDataReferences(config, context)
@@ -583,6 +571,7 @@ public class NotificationService implements ApplicationContextAware{
     }
 
     protected Map exportExecutionData(Execution e) {
+        def modifiedSuccessNodeList = executionService.getEffectiveSuccessNodeList(e)
         def emap = [
             id: e.id,
             href: grailsLinkGenerator.link(controller: 'execution', action: 'follow', id: e.id, absolute: true,
@@ -597,8 +586,8 @@ public class NotificationService implements ApplicationContextAware{
             project: e.project,
             failedNodeListString: e.failedNodeList,
             failedNodeList: e.failedNodeList?.split(",") as List,
-            succeededNodeListString: e.succeededNodeList,
-            succeededNodeList: e.succeededNodeList?.split(",") as List,
+            succeededNodeListString: modifiedSuccessNodeList.join(','),
+            succeededNodeList: modifiedSuccessNodeList,
             loglevel: ExecutionService.textLogLevels[e.loglevel] ?: e.loglevel
         ]
         if (null != e.dateCompleted) {
@@ -608,6 +597,22 @@ public class NotificationService implements ApplicationContextAware{
         }
         emap['abortedby'] = e.cancelled?e.abortedby:null
         emap
+    }
+
+    protected getEffectiveSuccessNodeList(Execution e){
+        def modifiedSuccessNodeList = []
+        if(e.succeededNodeList) {
+            List<String> successNodeList = e.succeededNodeList?.split(',')
+            def nodeSummary = workflowService.requestStateSummary(e, successNodeList)
+            if(nodeSummary) {
+                successNodeList.each { node ->
+                    if (nodeSummary.workflowState.nodeSummaries[node]?.summaryState == 'SUCCEEDED') {
+                        modifiedSuccessNodeList.add(node)
+                    }
+                }
+            }
+        }
+        modifiedSuccessNodeList
     }
 
     protected Map exportJobdata(ScheduledExecution scheduledExecution) {
@@ -752,5 +757,27 @@ public class NotificationService implements ApplicationContextAware{
             return false
         }
         return false
+    }
+
+    def generateNotificationContext(Execution exec, Map content, ScheduledExecution source){
+        def appUrl = grailsLinkGenerator.link(action: 'home', controller: 'menu',absolute: true)
+        def projUrl = grailsLinkGenerator.link(action: 'index', controller: 'menu', params: [project:  exec.project], absolute: true)
+
+        def execMap = generateExecutionData(exec, content)
+        def jobMap=exportJobdata(source)
+        Map context = generateContextData(exec, content)
+
+        //used for plugins types
+        execMap.job=jobMap
+        execMap.context=context
+
+        def contextMap=[:]
+        execMap.projectHref = projUrl
+        contextMap['job'] = toStringStringMap(jobMap)
+        contextMap['execution']=toStringStringMap(execMap)
+        contextMap['rundeck']=['href': appUrl]
+        context = DataContextUtils.merge(context, contextMap)
+
+        [context, execMap]
     }
 }

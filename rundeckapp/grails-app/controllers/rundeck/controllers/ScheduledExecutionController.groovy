@@ -27,6 +27,9 @@ import com.dtolabs.rundeck.app.support.RunJobCommand
 import com.dtolabs.rundeck.core.authentication.Group
 import com.dtolabs.rundeck.core.authorization.AuthContext
 import com.dtolabs.rundeck.core.authorization.UserAndRolesAuthContext
+import com.dtolabs.rundeck.plugins.ServiceNameConstants
+import org.rundeck.app.components.RundeckJobDefinitionManager
+import org.rundeck.app.components.jobs.ImportedJob
 import org.rundeck.core.auth.AuthConstants
 import com.dtolabs.rundeck.core.common.Framework
 import com.dtolabs.rundeck.core.common.INodeEntry
@@ -58,8 +61,6 @@ import org.springframework.web.multipart.MultipartHttpServletRequest
 import org.springframework.web.multipart.MultipartRequest
 import org.springframework.web.multipart.commons.CommonsMultipartFile
 import rundeck.*
-import rundeck.codecs.JobsXMLCodec
-import rundeck.codecs.JobsYAMLCodec
 import com.dtolabs.rundeck.app.api.ApiVersions
 import rundeck.services.*
 import rundeck.services.feature.FeatureService
@@ -103,7 +104,6 @@ class ScheduledExecutionController  extends ControllerBase{
     public static final String NOTIFY_OVERAVGDURATION_SUBJECT = 'notifyAvgDurationSubject'
     public static final String NOTIFY_ONRETRYABLEFAILURE_URL = 'notifyOnRetryableFailureUrl'
     public static final String NOTIFY_ONRETRYABLEFAILURE_EMAIL = 'notifyOnRetryableFailureEmail'
-    public static final String NOTIFY_RETRYABLEFAILURE_EMAIL = 'notifyRetryableFailureEmail'
     public static final String NOTIFY_RETRYABLEFAILURE_URL = 'notifyRetryableFailureUrl'
     public static final String NOTIFY_RETRYABLEFAILURE_RECIPIENTS = 'notifyRetryableFailureRecipients'
     public static final String NOTIFY_RETRYABLEFAILURE_SUBJECT = 'notifyRetryableFailureSubject'
@@ -140,6 +140,7 @@ class ScheduledExecutionController  extends ControllerBase{
     OptionValuesService optionValuesService
     FeatureService featureService
     ExecutionLifecyclePluginService executionLifecyclePluginService
+    RundeckJobDefinitionManager rundeckJobDefinitionManager
 
 
     def index = { redirect(controller:'menu',action:'jobs',params:params) }
@@ -184,7 +185,8 @@ class ScheduledExecutionController  extends ControllerBase{
             apiJobDeleteBulk             : ['DELETE', 'POST'],
             apiJobClusterTakeoverSchedule: 'PUT',
             apiJobUpdateSingle           : 'PUT',
-            apiJobRetry                  : 'POST'
+            apiJobRetry                  : 'POST',
+            apiJobWorkflow               : 'GET',
     ]
 
     def cancel (){
@@ -194,7 +196,7 @@ class ScheduledExecutionController  extends ControllerBase{
             session.removeAttribute('undoWF');
             session.removeAttribute('redoWF');
         }
-        if(session.editWF ){
+        if(session.editOPTS ){
             session.removeAttribute('editOPTS');
             session.removeAttribute('undoOPTS');
             session.removeAttribute('redoOPTS');
@@ -273,9 +275,10 @@ class ScheduledExecutionController  extends ControllerBase{
         ) {
 
             def model=[
-                    scheduledExecution: scheduledExecution,
-                    hideJobDelete     : params.hideJobDelete,
-                    jobDeleteSingle   : params.jobDeleteSingle,
+                    scheduledExecution  : scheduledExecution,
+                    hideJobDelete       : params.hideJobDelete,
+                    jobDeleteSingle     : params.jobDeleteSingle,
+                    isScheduled         : scheduledExecutionService.isScheduled(scheduledExecution)
             ]
 
             if (frameworkService.authorizeApplicationResourceAny(authContext,
@@ -330,12 +333,14 @@ class ScheduledExecutionController  extends ControllerBase{
             orchestratorPlugins = orchestratorPluginService.getOrchestratorPlugins()
         }
         def nextExecution = null
+        def isScheduled = scheduledExecutionService.isScheduled(scheduledExecution)
         if (keys.contains('nextExecution') || !keys) {
-            nextExecution = scheduledExecution.scheduled ? scheduledExecutionService.nextExecutionTime(
+            nextExecution = isScheduled ? scheduledExecutionService.nextExecutionTime(
                     scheduledExecution
             ) : null
         }
         [scheduledExecution   : scheduledExecution,
+         isScheduled          : isScheduled,
          crontab              : crontab,
          params               : params,
          total                : total,
@@ -458,7 +463,8 @@ class ScheduledExecutionController  extends ControllerBase{
         }
 
         def remoteClusterNodeUUID=null
-        if (scheduledExecution.scheduled && frameworkService.isClusterModeEnabled()) {
+        def isScheduled = scheduledExecutionService.isScheduled(scheduledExecution)
+        if (isScheduled && frameworkService.isClusterModeEnabled()) {
             remoteClusterNodeUUID = scheduledExecution.serverNodeUUID
         }
 
@@ -466,7 +472,13 @@ class ScheduledExecutionController  extends ControllerBase{
         def parentList = ReferencedExecution.parentList(scheduledExecution,10)
         def isReferenced = parentList?.size()>0
 
+        def pluginDescriptions=[:]
+        if(featureService.featurePresent('executionLifecyclePlugin')) {
+            pluginDescriptions[ServiceNameConstants.ExecutionLifecycle] = pluginService.
+                    listPluginDescriptions(ServiceNameConstants.ExecutionLifecycle)
+        }
         def dataMap= [
+                isScheduled: isScheduled,
                 scheduledExecution: scheduledExecution,
                 isReferenced: isReferenced,
                 parentList: parentList,
@@ -481,6 +493,7 @@ class ScheduledExecutionController  extends ControllerBase{
 				orchestratorPlugins: orchestratorPluginService.getOrchestratorPlugins(),
                 strategyPlugins: scheduledExecutionService.getWorkflowStrategyPluginDescriptions(),
                 logFilterPlugins: pluginService.listPlugins(LogFilterPlugin),
+                pluginDescriptions: pluginDescriptions,
                 max: params.int('max') ?: 10,
                 offset: params.int('offset') ?: 0] + _prepareExecute(scheduledExecution, framework,authContext)
         if (params.opt && (params.opt instanceof Map)) {
@@ -528,18 +541,22 @@ class ScheduledExecutionController  extends ControllerBase{
             }
             yaml{
                 response.setHeader("Content-Disposition","attachment; filename=\"${getFname(scheduledExecution.jobName)}.yaml\"")
-                render(text:JobsYAMLCodec.encode([scheduledExecution] as List),contentType:"text/yaml",encoding:"UTF-8")
+                response.contentType='text/yaml; charset=UTF-8'
+
+                response.outputStream.withWriter('UTF-8') { writer ->
+                    rundeckJobDefinitionManager.exportAs('yaml', [scheduledExecution], writer)
+                }
+                flush(response)
             }
 
             xml{
                 response.setHeader("Content-Disposition","attachment; filename=\"${getFname(scheduledExecution.jobName)}.xml\"")
-                response.setHeader(Constants.X_RUNDECK_RESULT_HEADER,"Jobs found: 1")
+                response.contentType='text/xml; charset=UTF-8'
 
-                def writer = new StringWriter()
-                def xml = new MarkupBuilder(writer)
-                JobsXMLCodec.encodeWithBuilder([scheduledExecution],xml)
-                writer.flush()
-                render(text:writer.toString(),contentType:"text/xml",encoding:"UTF-8")
+                response.outputStream.withWriter('UTF-8') { writer ->
+                    rundeckJobDefinitionManager.exportAs('xml', [scheduledExecution], writer)
+                }
+                flush(response)
             }
         }
     }
@@ -593,6 +610,7 @@ class ScheduledExecutionController  extends ControllerBase{
 
         def dataMap= [
                 scheduledExecution: scheduledExecution,
+                isScheduled: scheduledExecutionService.isScheduled(scheduledExecution),
                 crontab: crontab,
                 params: params,
                 total: total,
@@ -608,12 +626,23 @@ class ScheduledExecutionController  extends ControllerBase{
         dataMap
     }
 
-    public def workflowJson (){
+    public def apiJobWorkflow (){
+        if (!apiService.requireApi(request, response)) {
+            return
+        }
+
+        if (!apiService.requireVersion(request, response, ApiVersions.V34)) {
+            return
+        }
+
         def ScheduledExecution scheduledExecution = scheduledExecutionService.getByIDorUUID( params.id )
 
         if (notFoundResponse(scheduledExecution, 'Job', params.id)) {
-            return
+            return apiService.renderErrorFormat(response, [status: HttpServletResponse.SC_NOT_FOUND,
+                                                           code  : 'api.error.item.doesnotexist',
+                                                           args  : ['Job ID', params.id]])
         }
+
         AuthContext authContext = frameworkService.getAuthContextForSubjectAndProject(
                 session.subject,
                 scheduledExecution.project
@@ -627,7 +656,10 @@ class ScheduledExecutionController  extends ControllerBase{
                 ),
                 AuthConstants.ACTION_VIEW, 'Job', params.id
         )) {
-            return
+            return apiService.renderErrorFormat(response, [status: HttpServletResponse.SC_FORBIDDEN,
+                                                           code  : 'api.error.item.unauthorized', args: ['View', 'Job ' +
+                    'ID', jobid]]
+            )
         }
         def maxDepth=3
 
@@ -641,6 +673,11 @@ class ScheduledExecutionController  extends ControllerBase{
         withFormat {
             json {
                 render(contentType: 'application/json') {
+                    workflow wfdata
+                }
+            }
+            xml {
+                render(contentType: 'application/xml') {
                     workflow wfdata
                 }
             }
@@ -1537,21 +1574,21 @@ class ScheduledExecutionController  extends ControllerBase{
                     code: 'api.error.jobs.update.incorrect-document-content'])
         }
         if (params.project) {
-            jobset*.project = params.project
+            jobset.each{it.job.project = params.project}
         }
         UserAndRolesAuthContext authContext = frameworkService.getAuthContextForSubjectAndProject(session.subject,params.project)
 
         if (!frameworkService.authorizeProjectResourceAll(authContext, AuthConstants.RESOURCE_TYPE_JOB,
-                [AuthConstants.ACTION_CREATE], jobset[0].project)) {
+                [AuthConstants.ACTION_CREATE], jobset[0].job.project)) {
 
             return apiService.renderErrorXml(response, [status: HttpServletResponse.SC_FORBIDDEN,
-                    code: 'api.error.item.unauthorized', args: ['Create Job', 'Project', jobset[0].project]])
+                    code: 'api.error.item.unauthorized', args: ['Create Job', 'Project', jobset[0].job.project]])
         }
 
-        jobset*.uuid = params.id
+        jobset.each{it.job.uuid = params.id}
         def changeinfo = [user: session.user, method: 'apiJobCreateSingle']
         String roleList = request.subject.getPrincipals(Group.class).collect { it.name }.join(",")
-        def loadresults = scheduledExecutionService.loadJobs(jobset, 'create', 'preserve', changeinfo, authContext,
+        def loadresults = scheduledExecutionService.loadImportedJobs(jobset, 'create', 'preserve', changeinfo, authContext,
                 (params?.validateJobref=='true'))
         scheduledExecutionService.issueJobChangeEvents(loadresults.jobChangeEvents)
 
@@ -1620,12 +1657,12 @@ class ScheduledExecutionController  extends ControllerBase{
                     code: 'api.error.jobs.update.incorrect-document-content'])
         }
         if (params.project) {
-            jobset*.project = params.project
+            jobset.each{it.job.project = params.project}
         }
-        jobset*.uuid=params.id
+        jobset.each{it.job.uuid=params.id}
         def changeinfo = [user: session.user, method: 'apiJobUpdateSingle']
         String roleList = request.subject.getPrincipals(Group.class).collect { it.name }.join(",")
-        def loadresults = scheduledExecutionService.loadJobs(jobset, 'update', 'preserve', changeinfo, authContext,
+        def loadresults = scheduledExecutionService.loadImportedJobs(jobset, 'update', 'preserve', changeinfo, authContext,
                 (params?.validateJobref=='true'))
         scheduledExecutionService.issueJobChangeEvents(loadresults.jobChangeEvents)
 
@@ -1806,6 +1843,8 @@ class ScheduledExecutionController  extends ControllerBase{
         }
 
         def executionLifecyclePlugins = executionLifecyclePluginService.listEnabledExecutionLifecyclePlugins(pluginControlService)
+        def jobComponents = rundeckJobDefinitionManager.getJobDefinitionComponents()
+        def jobComponentValues=rundeckJobDefinitionManager.getJobDefinitionComponentValues(scheduledExecution)
 
         def fprojects = frameworkService.projectNames(authContext)
         return [scheduledExecution          : scheduledExecution, crontab:crontab, params:params,
@@ -1820,7 +1859,9 @@ class ScheduledExecutionController  extends ControllerBase{
                 logFilterPlugins            : logFilterPlugins,
                 executionLifecyclePlugins   : executionLifecyclePlugins,
                 projectNames                : fprojects,
-                globalVars                  : globals
+                globalVars                  : globals,
+                jobComponents               : jobComponents,
+                jobComponentValues          : jobComponentValues,
         ]
     }
 
@@ -1828,7 +1869,6 @@ class ScheduledExecutionController  extends ControllerBase{
 
     public def update (){
         withForm{
-        Framework framework=frameworkService.getRundeckFramework()
         def changeinfo=[method:'update',change:'modify',user:session.user]
 
         //pass session-stored edit state in params map
@@ -1887,8 +1927,12 @@ class ScheduledExecutionController  extends ControllerBase{
             def executionLifecyclePlugins = executionLifecyclePluginService.listEnabledExecutionLifecyclePlugins(pluginControlService)
 
             def globals = frameworkService.getProjectGlobals(scheduledExecution.project).keySet()
+
+            def jobComponents = rundeckJobDefinitionManager.getJobDefinitionComponents()
+            def jobComponentValues=rundeckJobDefinitionManager.getJobDefinitionComponentValues(scheduledExecution)
             return render(
                     view: 'edit', model: [scheduledExecution        : scheduledExecution,
+                                          sessionOpts               : params['_sessionEditOPTSObject']?.values(),
                                           nextExecutionTime         : scheduledExecutionService.nextExecutionTime(
                                                   scheduledExecution
                                           ),
@@ -1901,7 +1945,10 @@ class ScheduledExecutionController  extends ControllerBase{
                                           params                    : params,
                                           globalVars                : globals,
                                           logFilterPlugins          : logFilterPlugins,
-                                          executionLifecyclePlugins : executionLifecyclePlugins
+                                          executionLifecyclePlugins : executionLifecyclePlugins,
+                                          jobComponents             : jobComponents,
+                                          jobComponentValues        : jobComponentValues,
+                                          jobComponentValidation    : params['jobComponentValidation']
                    ])
         }else{
 
@@ -1941,7 +1988,8 @@ class ScheduledExecutionController  extends ControllerBase{
                 [AuthConstants.ACTION_READ], scheduledExecution.project), AuthConstants.ACTION_READ, 'Job', params.id)) {
             return
         }
-        def newScheduledExecution = ScheduledExecution.fromMap(scheduledExecution.toMap())
+        def importedJob = rundeckJobDefinitionManager.copy(scheduledExecution)
+        def newScheduledExecution = importedJob.job
         if (newScheduledExecution.hasErrors()) {
             newScheduledExecution.errors.allErrors.each{log.warn("job copy data binding: "+it)}
         }
@@ -1992,7 +2040,8 @@ class ScheduledExecutionController  extends ControllerBase{
 
         def fprojects = frameworkService.projectNames(authContext)
         def globals = frameworkService.getProjectGlobals(scheduledExecution.project).keySet()
-
+        def jobComponents = rundeckJobDefinitionManager.getJobDefinitionComponents()
+        def jobComponentValues=rundeckJobDefinitionManager.getJobDefinitionComponentValues(scheduledExecution)
         render(
                 view: 'create',
                 model: [
@@ -2009,7 +2058,9 @@ class ScheduledExecutionController  extends ControllerBase{
                         logFilterPlugins            : logFilterPlugins,
                         executionLifecyclePlugins   : executionLifecyclePlugins,
                         projectNames                : fprojects,
-                        globalVars                  : globals
+                        globalVars                  : globals,
+                        jobComponents               : jobComponents,
+                        jobComponentValues          : jobComponentValues,
                 ]
         )
 
@@ -2161,6 +2212,8 @@ class ScheduledExecutionController  extends ControllerBase{
         def globals=frameworkService.getProjectGlobals(scheduledExecution.project).keySet()
         def timeZones = scheduledExecutionService.getTimeZones()
         def fprojects = frameworkService.projectNames(authContext)
+        def jobComponents = rundeckJobDefinitionManager.getJobDefinitionComponents()
+
 
         return ['scheduledExecution'        : scheduledExecution, params:params, crontab:[:],
                 nodeStepDescriptions        : nodeStepTypes, stepDescriptions: stepTypes,
@@ -2171,7 +2224,9 @@ class ScheduledExecutionController  extends ControllerBase{
                 executionLifecyclePlugins   : executionLifecyclePlugins,
                 projectNames                : fprojects,
                 globalVars                  : globals,
-                timeZones                   : timeZones]
+                timeZones                   : timeZones,
+                jobComponents               : jobComponents
+        ]
     }
 
     private clearEditSession(id='_new'){
@@ -2283,7 +2338,7 @@ class ScheduledExecutionController  extends ControllerBase{
 
         //pass session-stored edit state in params map
         transferSessionEditState(session, params,'_new')
-        def result= scheduledExecutionService._dovalidate(params,authContext)
+        def result= scheduledExecutionService._dovalidateAdhoc(params,authContext)
         def ScheduledExecution scheduledExecution=result.scheduledExecution
         def failed=result.failed
         if(!failed){
@@ -2345,7 +2400,8 @@ class ScheduledExecutionController  extends ControllerBase{
 
         //pass session-stored edit state in params map
         transferSessionEditState(session, params,'_new')
-        def result = scheduledExecutionService._dosave(params, authContext, changeinfo)
+
+        def result = scheduledExecutionService._docreateJobOrParams(null, params, authContext, changeinfo)
         scheduledExecutionService.issueJobChangeEvent(result.jobChangeEvent)
         def scheduledExecution = result.scheduledExecution
         if(result.success && scheduledExecution.id){
@@ -2383,6 +2439,8 @@ class ScheduledExecutionController  extends ControllerBase{
             !pluginControlService?.isDisabledPlugin(k,'Notification')
         }
 
+        def jobComponents = rundeckJobDefinitionManager.getJobDefinitionComponents()
+        def jobComponentValues=rundeckJobDefinitionManager.getJobDefinitionComponentValues(scheduledExecution)
         render(view: 'create', model: [scheduledExecution: scheduledExecution, params: params,
                                        nodeStepDescriptions: nodeStepTypes,
                 stepDescriptions: stepTypes,
@@ -2390,7 +2448,10 @@ class ScheduledExecutionController  extends ControllerBase{
                 strategyPlugins:strategyPlugins,
                 orchestratorPlugins: orchestratorPluginService.listDescriptions(),
                 notificationValidation:params['notificationValidation'],
-                logFilterPlugins:logFilterPlugins
+                logFilterPlugins:logFilterPlugins,
+                jobComponents: jobComponents,
+                jobComponentValues: jobComponentValues,
+                jobComponentValidation: params['jobComponentValidation']
         ])
         }.invalidToken{
             request.errorCode='request.error.invalidtoken.message'
@@ -2402,77 +2463,73 @@ class ScheduledExecutionController  extends ControllerBase{
     def upload(){
 
     }
-    def uploadPost ={
+
+    def uploadPost() {
         log.debug("ScheduledExecutionController: upload " + params)
-        withForm{
-        Framework framework = frameworkService.getRundeckFramework()
-            UserAndRolesAuthContext authContext = frameworkService.getAuthContextForSubjectAndProject(session.subject,params.project)
-        
-        def fileformat = params.fileformat ?: 'xml'
-        def parseresult
-        if(params.xmlBatch && params.xmlBatch instanceof String) {
-            String fileContent = params.xmlBatch
-            parseresult = scheduledExecutionService.parseUploadedFile(fileContent, fileformat)
-        } else if(params.xmlBatch && params.xmlBatch instanceof CommonsMultipartFile) {
-            InputStream fileContent = params.xmlBatch.inputStream
-            parseresult = scheduledExecutionService.parseUploadedFile(fileContent, fileformat)
-        } else if (request instanceof MultipartHttpServletRequest) {
-            def file = request.getFile("xmlBatch")
-            if (!file || file.empty) {
+        withForm {
+            UserAndRolesAuthContext authContext = frameworkService.
+                    getAuthContextForSubjectAndProject(session.subject, params.project)
+
+            def fileformat = params.fileformat ?: 'xml'
+            def parseresult
+            if (params.xmlBatch && params.xmlBatch instanceof String) {
+                String fileContent = params.xmlBatch
+                parseresult = scheduledExecutionService.parseUploadedFile(fileContent, fileformat)
+            } else if (params.xmlBatch && params.xmlBatch instanceof CommonsMultipartFile) {
+                InputStream fileContent = params.xmlBatch.inputStream
+                parseresult = scheduledExecutionService.parseUploadedFile(fileContent, fileformat)
+            } else if (request instanceof MultipartHttpServletRequest) {
+                def file = request.getFile("xmlBatch")
+                if (!file || file.empty) {
+                    request.message = "No file was uploaded."
+                    return render(view: 'upload')
+                }
+                parseresult = scheduledExecutionService.parseUploadedFile(file.getInputStream(), fileformat)
+            } else {
                 request.message = "No file was uploaded."
                 return render(view: 'upload')
             }
-            parseresult = scheduledExecutionService.parseUploadedFile(file.getInputStream(), fileformat)
-        } else {
-            request.message = "No file was uploaded."
-            return render(view:'upload')
-        }
-        def jobset
-        if(parseresult.errorCode){
-            parseresult.error=message(code:parseresult.errorCode,args:parseresult.args)
-        }
-        if(parseresult.error){
-            if(params.xmlreq){
-                flash.error = parseresult.error
-                return xmlerror()
-            }else{
-                request.error=parseresult.error
-                return render(view:'upload')
+            def jobset
+            if (parseresult.errorCode) {
+                parseresult.error = message(code: parseresult.errorCode, args: parseresult.args)
             }
-        }
-        jobset=parseresult.jobset
-        jobset*.project=params.project
-        def changeinfo = [user: session.user,method:'upload']
-        String roleList = request.subject.getPrincipals(Group.class).collect {it.name}.join(",")
-        def loadresults = scheduledExecutionService.loadJobs(jobset, params.dupeOption, params.uuidOption,
-                 changeinfo,authContext, (params?.validateJobref=='true'))
+            if (parseresult.error) {
+                request.error = parseresult.error
+                return render(view: 'upload')
+            }
+            jobset = parseresult.jobset
+            jobset.each { it.job.project = params.project }
+            def changeinfo = [user: session.user, method: 'upload']
+
+            def loadresults = scheduledExecutionService.loadImportedJobs(
+                    jobset,
+                    params.dupeOption,
+                    params.uuidOption,
+                    changeinfo,
+                    authContext,
+                    (params?.validateJobref == 'true')
+            )
             scheduledExecutionService.issueJobChangeEvents(loadresults.jobChangeEvents)
 
 
-        def jobs = loadresults.jobs
-        def jobsi = loadresults.jobsi
-        def msgs = loadresults.msgs
-        def errjobs = loadresults.errjobs
-        def skipjobs = loadresults.skipjobs
-
-        if(!params.xmlreq){
-            return render(view: 'upload',model: [jobs: jobs, errjobs: errjobs, skipjobs: skipjobs,
-                nextExecutions:scheduledExecutionService.nextExecutionTimes(jobs.grep{ it.scheduled }), 
-                messages: msgs,
-                didupload: true])
-        }else{
-            //TODO: update commander's jobs upload task to submit XML content directly instead of via uploaded file, and use proper
-            //TODO: grails content negotiation
-            response.setHeader(Constants.X_RUNDECK_RESULT_HEADER,"Jobs Uploaded. Succeeded: ${jobs.size()}, Failed: ${errjobs.size()}, Skipped: ${skipjobs.size()}")
-                render(contentType:"text/xml"){
-                    result(error:false){
-                        renderJobsImportApiXML(jobs, jobsi, errjobs, skipjobs, delegate)
-                    }
-                }
-        }
-        }.invalidToken{
-            request.warn=g.message(code:'request.error.invalidtoken.message')
-            render(view: 'upload',params: [project:params.project])
+            def jobs = loadresults.jobs
+            def msgs = loadresults.msgs
+            def errjobs = loadresults.errjobs
+            def skipjobs = loadresults.skipjobs
+            return render(
+                    view: 'upload',
+                    model: [
+                            jobs          : jobs,
+                            errjobs       : errjobs,
+                            skipjobs      : skipjobs,
+                            nextExecutions: scheduledExecutionService.nextExecutionTimes(jobs.grep { scheduledExecutionService.isScheduled(it) }),
+                            messages      : msgs,
+                            didupload     : true
+                    ]
+            )
+        }.invalidToken {
+            request.warn = g.message(code: 'request.error.invalidtoken.message')
+            render(view: 'upload', params: [project: params.project])
         }
     }
 
@@ -3304,7 +3361,7 @@ class ScheduledExecutionController  extends ControllerBase{
         if(request.api_version >= ApiVersions.V8){
             //v8 override project using parameter
             if(params.project){
-                jobset*.project=params.project
+                jobset.each{it.job.project=params.project}
             }
         }
         def changeinfo = [user: session.user,method:'apiJobsImport']
@@ -3315,7 +3372,7 @@ class ScheduledExecutionController  extends ControllerBase{
         if (request.api_version < ApiVersions.V9) {
             option = null
         }
-        def loadresults = scheduledExecutionService.loadJobs(jobset,params.dupeOption, option, changeinfo, authContext,
+        def loadresults = scheduledExecutionService.loadImportedJobs(jobset,params.dupeOption, option, changeinfo, authContext,
                 (params?.validateJobref=='true'))
         scheduledExecutionService.issueJobChangeEvents(loadresults.jobChangeEvents)
 
@@ -3368,13 +3425,15 @@ class ScheduledExecutionController  extends ControllerBase{
         withFormat{
             xml{
                 def writer = new StringWriter()
-                def xml = new MarkupBuilder(writer)
-                JobsXMLCodec.encodeWithBuilder([scheduledExecution],xml)
+                rundeckJobDefinitionManager.exportAs('xml',[scheduledExecution], writer)
                 writer.flush()
                 render(text:writer.toString(),contentType:"text/xml",encoding:"UTF-8")
             }
             yaml{
-                render(text:JobsYAMLCodec.encode([scheduledExecution] as List),contentType:"text/yaml",encoding:"UTF-8")
+                def writer = new StringWriter()
+                rundeckJobDefinitionManager.exportAs('yaml',[scheduledExecution], writer)
+                writer.flush()
+                render(text:writer.toString(),contentType:"text/yaml",encoding:"UTF-8")
             }
         }
     }

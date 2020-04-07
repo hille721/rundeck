@@ -33,7 +33,7 @@ You can provide private ssh keys by mounting them into `/home/rundeck/.ssh`:
 **Kubernetes** users may wish to mount a private key in through the secrets system. See
 Kubernetes documentation [Use-Case: Pod with ssh keys](https://kubernetes.io/docs/concepts/configuration/secret/#use-cases) for details.
 
-[**Rundeck Key Storage**](http://rundeck.org/docs/plugins-user-guide/ssh-plugins.html#using-key-storage-for-ssh) can be used to provide ssh keys to the ssh plugin as well.
+[**Rundeck Key Storage**](https://docs.rundeck.com/docs/administration/projects/node-execution/ssh.html#using-key-storage-for-ssh) can be used to provide ssh keys to the ssh plugin as well.
 
 ## control JVM heap allocation
 
@@ -44,7 +44,7 @@ The RAM ratio is set to `1` by default, so the JVM will utilize up to about the 
 See `JVM_MAX_RAM_FRACTION` for information on changing this.
 
 ## key store security
-By defualt keystorage is set to use the database, and the encryption converters are
+By default keystorage is set to use the database, and the encryption converters are
 **disabled**. To enable encryption, supply a password for one or both of the default converters:
 ```
 RUNDECK_STORAGE_CONVERTER_1_CONFIG_PASSWORD=supersecret
@@ -125,7 +125,9 @@ if running behind a TLS terminating proxy.
 
 ### `RUNDECK_GRAILS_UPLOAD_MAXSIZE`
 
-Controls both the `maxFileSize` and `maxRequest` for the grails controller config.
+Controls both the `maxFileSize` and `maxRequest` for the grails controller config and `maxsize`
+for the Rundeck fileUploadService tempfile config.
+
 The internal default is approximately `25Mib` or `26214400`.
 
 ### `RUNDECK_SERVER_ADDRESS=0.0.0.0`

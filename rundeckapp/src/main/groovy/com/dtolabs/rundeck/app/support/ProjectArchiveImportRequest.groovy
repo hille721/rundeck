@@ -25,6 +25,8 @@ interface ProjectArchiveImportRequest {
     Boolean getImportExecutions()
     Boolean getImportConfig()
     Boolean getImportACL()
-    Boolean getImportWebhooks()
-
+    Boolean getImportScm()
+    Boolean getValidateJobref()
+    Map<String,Boolean> getImportComponents()
+    Map<String,Map<String, String>> getImportOpts()
 }

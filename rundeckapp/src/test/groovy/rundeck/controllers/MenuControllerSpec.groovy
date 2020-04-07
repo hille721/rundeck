@@ -28,8 +28,10 @@ import com.dtolabs.rundeck.core.authorization.providers.Policy
 import com.dtolabs.rundeck.core.authorization.providers.PolicyCollection
 import org.rundeck.core.auth.AuthConstants
 import com.dtolabs.rundeck.core.common.Framework
+import com.dtolabs.rundeck.core.common.IFramework
 import com.dtolabs.rundeck.core.common.IRundeckProject
 import com.dtolabs.rundeck.core.common.ProjectManager
+import com.dtolabs.rundeck.core.utils.IPropertyLookup
 import com.dtolabs.rundeck.core.plugins.DescribedPlugin
 import grails.test.mixin.Mock
 import grails.test.mixin.TestFor
@@ -46,6 +48,7 @@ import rundeck.services.ApiService
 import rundeck.services.AuthorizationService
 import rundeck.services.ConfigurationService
 import rundeck.services.FrameworkService
+import rundeck.services.JobSchedulesService
 import rundeck.services.ScheduledExecutionService
 import rundeck.services.ScmService
 import rundeck.services.UserService
@@ -61,7 +64,7 @@ import javax.servlet.http.HttpServletResponse
  * Created by greg on 3/15/16.
  */
 @TestFor(MenuController)
-@Mock([ScheduledExecution, CommandExec, Workflow, Project, Execution, User, AuthToken, ScheduledExecutionStats])
+@Mock([ScheduledExecution, CommandExec, Workflow, Project, Execution, User, AuthToken, ScheduledExecutionStats, UserService])
 class MenuControllerSpec extends Specification {
     def "api job detail xml"() {
         given:
@@ -75,6 +78,11 @@ class MenuControllerSpec extends Specification {
         job1.totalTime=200*1000
         job1.execCount=100
         job1.save()
+        def jobSchedulesService = Mock(JobSchedulesService){
+            shouldScheduleExecution(_) >> job1.shouldScheduleExecution()
+        }
+        controller.jobSchedulesService = jobSchedulesService
+        controller.scheduledExecutionService.jobSchedulesService = jobSchedulesService
 
         when:
         params.id=testUUID
@@ -112,6 +120,11 @@ class MenuControllerSpec extends Specification {
         job1.totalTime=200*1000
         job1.execCount=100
         job1.save()
+        def jobSchedulesService = Mock(JobSchedulesService){
+            shouldScheduleExecution(_) >> job1.shouldScheduleExecution()
+        }
+        controller.jobSchedulesService = jobSchedulesService
+        controller.scheduledExecutionService.jobSchedulesService = jobSchedulesService
 
         when:
         params.id=testUUID
@@ -183,6 +196,11 @@ class MenuControllerSpec extends Specification {
         job2.serverNodeUUID=UUID.randomUUID().toString()
         job2.save()
 
+        ScheduledExecution unscheduledJob = new ScheduledExecution(createJobParams(jobName:'unscheduled'))
+        unscheduledJob.scheduled=false
+        unscheduledJob.serverNodeUUID=testUUID
+        unscheduledJob.save()
+
         when:
         def result = controller.apiSchedulerListJobs(null, true)
 
@@ -191,6 +209,7 @@ class MenuControllerSpec extends Specification {
         _ * controller.frameworkService.getServerUUID() >> testUUID
         1 * controller.frameworkService.getAuthContextForSubjectAndProject(_,'AProject') >> Mock(UserAndRolesAuthContext)
         1 * controller.frameworkService.authorizeProjectJobAny(_,job1,['read','view'],'AProject')>>true
+        0 * controller.frameworkService.authorizeProjectJobAny(_,unscheduledJob,['read','view'],'AProject')
         1 * controller.frameworkService.isClusterModeEnabled()>>true
         1 * controller.apiService.renderSuccessXml(_,_,_)
 
@@ -206,6 +225,11 @@ class MenuControllerSpec extends Specification {
         job1.serverNodeUUID=testUUID
         job1.save()
 
+        ScheduledExecution unscheduledJob = new ScheduledExecution(createJobParams(jobName:'unscheduled'))
+        unscheduledJob.scheduled=false
+        unscheduledJob.serverNodeUUID=uuid2
+        unscheduledJob.save()
+
         ScheduledExecution job2 = new ScheduledExecution(createJobParams(jobName:'job2'))
         job2.scheduled=true
         job2.serverNodeUUID=uuid2
@@ -219,6 +243,7 @@ class MenuControllerSpec extends Specification {
         _ * controller.frameworkService.getServerUUID() >> testUUID
         1 * controller.frameworkService.getAuthContextForSubjectAndProject(_,'AProject') >> Mock(UserAndRolesAuthContext)
         1 * controller.frameworkService.authorizeProjectJobAny(_,job2,['read','view'],'AProject')>>true
+        0 * controller.frameworkService.authorizeProjectJobAny(_,unscheduledJob,['read','view'],'AProject')
         1 * controller.frameworkService.isClusterModeEnabled()>>true
         1 * controller.apiService.renderSuccessXml(_,_,_)
 
@@ -231,6 +256,7 @@ class MenuControllerSpec extends Specification {
         controller.apiService = Mock(ApiService)
         controller.frameworkService = Mock(FrameworkService)
         controller.scheduledExecutionService = Mock(ScheduledExecutionService)
+        controller.jobSchedulesService = Mock(JobSchedulesService)
         ScheduledExecution job1 = new ScheduledExecution(createJobParams(jobName: 'job1', uuid:testUUID))
         job1.serverNodeUUID = testUUID2
         job1.totalTime=200*1000
@@ -253,7 +279,7 @@ class MenuControllerSpec extends Specification {
                                                                                    resource  : [group: job1.groupPath, name: job1.jobName]]]
         1 * controller.frameworkService.existsFrameworkProject('AProject') >> true
         1 * controller.apiService.requireExists(_, true, ['project', 'AProject']) >> true
-        1 * controller.scheduledExecutionService.listWorkflows(_) >> [schedlist: [job1]]
+        1 * controller.scheduledExecutionService.listWorkflows(_,_) >> [schedlist: [job1]]
         1 * controller.scheduledExecutionService.finishquery(_, _, _) >> [max           : 20,
                                                                           offset        : 0,
                                                                           paginateParams: [:],
@@ -273,6 +299,7 @@ class MenuControllerSpec extends Specification {
         controller.apiService = Mock(ApiService)
         controller.frameworkService = Mock(FrameworkService)
         controller.scheduledExecutionService = Mock(ScheduledExecutionService)
+        controller.jobSchedulesService = Mock(JobSchedulesService)
         ScheduledExecution job1 = new ScheduledExecution(createJobParams(jobName: 'job1', uuid: testUUID))
         job1.serverNodeUUID = testUUID2
         job1.totalTime = 200 * 1000
@@ -295,7 +322,7 @@ class MenuControllerSpec extends Specification {
                                                                                    resource  :[group:job1.groupPath,name:job1.jobName]] ]
         1 * controller.frameworkService.existsFrameworkProject('AProject') >> true
         1 * controller.apiService.requireExists(_,true,['project','AProject']) >> true
-        1 * controller.scheduledExecutionService.listWorkflows(_) >> [schedlist : [job1]]
+        1 * controller.scheduledExecutionService.listWorkflows(_,_) >> [schedlist : [job1]]
         1 * controller.scheduledExecutionService.finishquery(_,_,_) >> [max: 20,
                                                                         offset:0,
                                                                         paginateParams:[:],
@@ -322,6 +349,7 @@ class MenuControllerSpec extends Specification {
         controller.scheduledExecutionService = Mock(ScheduledExecutionService) {
             nextExecutions(_,_) >> [new Date()]
         }
+        controller.jobSchedulesService = Mock(JobSchedulesService)
         ScheduledExecution job1 = new ScheduledExecution(createJobParams(jobName: 'job1', uuid:testUUID))
         job1.serverNodeUUID = testUUID2
         job1.totalTime=200*1000
@@ -344,7 +372,7 @@ class MenuControllerSpec extends Specification {
                                     resource:[group:job1.groupPath,name:job1.jobName]] ]
         1 * controller.frameworkService.existsFrameworkProject('AProject') >> true
         1 * controller.apiService.requireExists(_,true,['project','AProject']) >> true
-        1 * controller.scheduledExecutionService.listWorkflows(_) >> [schedlist : [job1]]
+        1 * controller.scheduledExecutionService.listWorkflows(_,_) >> [schedlist : [job1]]
         1 * controller.scheduledExecutionService.finishquery(_,_,_) >> [max: 20,
                                                                         offset:0,
                                                                         paginateParams:[:],
@@ -367,6 +395,7 @@ class MenuControllerSpec extends Specification {
         controller.scheduledExecutionService = Mock(ScheduledExecutionService) {
             nextExecutions(_,_) >> [new Date()]
         }
+        controller.jobSchedulesService = Mock(JobSchedulesService)
         ScheduledExecution job1 = new ScheduledExecution(createJobParams(jobName: 'job1', uuid: testUUID))
         job1.serverNodeUUID = testUUID2
         job1.totalTime = 200 * 1000
@@ -390,7 +419,7 @@ class MenuControllerSpec extends Specification {
                                                                                    resource  : [group: job1.groupPath, name: job1.jobName]]]
         1 * controller.frameworkService.existsFrameworkProject('AProject') >> true
         1 * controller.apiService.requireExists(_, true, ['project', 'AProject']) >> true
-        1 * controller.scheduledExecutionService.listWorkflows(_) >> [schedlist: [job1]]
+        1 * controller.scheduledExecutionService.listWorkflows(_,_) >> [schedlist: [job1]]
         1 * controller.scheduledExecutionService.finishquery(_, _, _) >> [max           : 20,
                                                                           offset        : 0,
                                                                           paginateParams: [:],
@@ -974,7 +1003,7 @@ class MenuControllerSpec extends Specification {
         controller.listExport()
         then:
 
-        1 * controller.scheduledExecutionService.listWorkflows(_) >> [schedlist : []]
+        1 * controller.scheduledExecutionService.listWorkflows(_,_) >> [schedlist : []]
         1 * controller.scheduledExecutionService.finishquery(_,_,_) >> [max: 20,
                                                                         offset:0,
                                                                         paginateParams:[:],
@@ -1015,7 +1044,7 @@ class MenuControllerSpec extends Specification {
         controller.listExport()
         then:
 
-        1 * controller.scheduledExecutionService.listWorkflows(_) >> [schedlist : []]
+        1 * controller.scheduledExecutionService.listWorkflows(_,_) >> [schedlist : []]
         1 * controller.scheduledExecutionService.finishquery(_,_,_) >> [max: 20,
                                                                         offset:0,
                                                                         paginateParams:[:],
@@ -1163,7 +1192,7 @@ class MenuControllerSpec extends Specification {
     }
 
 
-    def "jobs nextSchedListIds"() {
+    def "jobs jobListIds"() {
         given:
         def testUUID = UUID.randomUUID().toString()
         controller.frameworkService = Mock(FrameworkService){
@@ -1175,6 +1204,7 @@ class MenuControllerSpec extends Specification {
         controller.scheduledExecutionService = Mock(ScheduledExecutionService)
         controller.scmService = Mock(ScmService)
         controller.userService = Mock(UserService)
+        controller.jobSchedulesService = Mock(JobSchedulesService)
         def query = new ScheduledExecutionQuery()
         params.project='test'
         ScheduledExecution job1 = new ScheduledExecution(createJobParams(jobName: 'job1', uuid:testUUID))
@@ -1188,13 +1218,104 @@ class MenuControllerSpec extends Specification {
         1 * controller.frameworkService.authorizeProjectResources(_, _, _, _) >> [[authorized: true,
                                                                                    action    : AuthConstants.ACTION_READ,
                                                                                    resource  : [group: job1.groupPath, name: job1.jobName]]]
-        1 * controller.scheduledExecutionService.listWorkflows(_) >> [schedlist: [job1]]
+        1 * controller.scheduledExecutionService.listWorkflows(_,_) >> [schedlist: [job1]]
         1 * controller.scheduledExecutionService.finishquery(_, _, _) >> [max           : 20,
                                                                           offset        : 0,
                                                                           paginateParams: [:],
                                                                           displayParams : [:]]
-        model.nextSchedListIds.size() == model.nextScheduled.size()
-        model.nextSchedListIds.get(0) == model.nextScheduled.get(0).extid
+        model.jobListIds.size() == model.nextScheduled.size()
+        model.jobListIds.get(0) == model.nextScheduled.get(0).extid
+    }
+
+    @Unroll
+    def "jobs scheduledJobListIds"() {
+        given:
+        def testUUID = UUID.randomUUID().toString()
+        def testUUID2 = UUID.randomUUID().toString()
+        controller.frameworkService = Mock(FrameworkService){
+            getRundeckFramework() >> Mock(Framework) {
+                getProjectManager() >> Mock(ProjectManager)
+            }
+        }
+        controller.authorizationService = Mock(AuthorizationService)
+        controller.scheduledExecutionService = Mock(ScheduledExecutionService)
+        controller.scmService = Mock(ScmService)
+        controller.userService = Mock(UserService)
+        controller.jobSchedulesService = Mock(JobSchedulesService)
+        def query = new ScheduledExecutionQuery()
+        params.project='test'
+        ScheduledExecution job1 = new ScheduledExecution(createJobParams(jobName: 'job1', uuid:testUUID))
+        ScheduledExecution job2 = new ScheduledExecution(createJobParams(jobName: 'job2', uuid:testUUID2,scheduled:false))
+
+        when:
+        def model = controller.jobs(query)
+        then:
+        2 * controller.frameworkService.authResourceForJob(_) >>
+                [authorized: true, action: AuthConstants.ACTION_READ]
+        1 * controller.frameworkService.authorizeProjectResource(_, _, _, _) >> true
+        1 * controller.frameworkService.authorizeProjectResources(_, _, _, _) >> [[authorized: true,
+                                                                                   action    : AuthConstants.ACTION_READ,
+                                                                                   resource  : [group: job1.groupPath, name: job1.jobName]],
+                                                                                  [authorized: true,
+                                                                                   action    : AuthConstants.ACTION_READ,
+                                                                                   resource  : [group: job2.groupPath, name: job2.jobName]]]
+        1 * controller.scheduledExecutionService.listWorkflows(_,_) >> [schedlist: [job1,job2]]
+        1 * controller.scheduledExecutionService.finishquery(_, _, _) >> [max           : 20,
+                                                                          offset        : 0,
+                                                                          paginateParams: [:],
+                                                                          displayParams : [:]]
+        1 * controller.jobSchedulesService.isScheduled(testUUID) >> aScheduled
+        1 * controller.jobSchedulesService.isScheduled(testUUID2) >> bScheduled
+        model.jobListIds.size() == 2
+        model.jobListIds.size() == model.nextScheduled.size()
+        model.jobListIds == model.nextScheduled*.extid
+        model.scheduledJobListIds.size() == count
+        model.scheduledJobListIds.size() == model.scheduledJobs.size()
+        model.scheduledJobListIds == model.scheduledJobs*.extid
+
+        where:
+            aScheduled | bScheduled | count
+            true       | true       | 2
+            true       | false      | 1
+            false      | true       | 1
+            false      | false      | 0
+    }
+
+    def "jobs list next execution times"() {
+        given:
+        def testUUID = UUID.randomUUID().toString()
+        controller.frameworkService = Mock(FrameworkService){
+            getRundeckFramework() >> Mock(Framework) {
+                getProjectManager() >> Mock(ProjectManager)
+            }
+        }
+        controller.authorizationService = Mock(AuthorizationService)
+        controller.scheduledExecutionService = Mock(ScheduledExecutionService)
+        controller.scmService = Mock(ScmService)
+        controller.userService = Mock(UserService)
+        controller.jobSchedulesService = Mock(JobSchedulesService)
+        def query = new ScheduledExecutionQuery()
+        params.project='test'
+        ScheduledExecution job1 = new ScheduledExecution(createJobParams(jobName: 'job1', uuid:testUUID)).save()
+
+        when:
+        def model = controller.jobs(query)
+        then:
+        1 * controller.frameworkService.authResourceForJob(_) >>
+                [authorized: true, action: AuthConstants.ACTION_READ, resource: job1]
+        1 * controller.frameworkService.authorizeProjectResource(_, _, _, _) >> true
+        1 * controller.frameworkService.authorizeProjectResources(_, _, _, _) >> [[authorized: true,
+                                                                                   action    : AuthConstants.ACTION_READ,
+                                                                                   resource  : [group: job1.groupPath, name: job1.jobName]]]
+        1 * controller.scheduledExecutionService.listWorkflows(_,_) >> [schedlist: [job1]]
+        1 * controller.scheduledExecutionService.finishquery(_, _, _) >> [max           : 20,
+                                                                          offset        : 0,
+                                                                          paginateParams: [:],
+                                                                          displayParams : [:]]
+        1 * controller.jobSchedulesService.isScheduled(testUUID) >> true
+        1 * controller.scheduledExecutionService.nextExecutionTimes([job1]) >> [(job1.id):new Date()]
+        model.nextExecutions!=null
+        model.nextExecutions[job1.id]!=null
     }
 
 
@@ -1212,6 +1333,7 @@ class MenuControllerSpec extends Specification {
         controller.scheduledExecutionService = Mock(ScheduledExecutionService)
         controller.scmService = Mock(ScmService)
         controller.userService = Mock(UserService)
+        controller.jobSchedulesService = Mock(JobSchedulesService)
         def query = new ScheduledExecutionQuery()
         params.project='test'
         ScheduledExecution job1 = new ScheduledExecution(createJobParams(jobName: 'job1', uuid:testUUID))
@@ -1225,7 +1347,7 @@ class MenuControllerSpec extends Specification {
         1 * controller.frameworkService.authorizeProjectResources(_, _, _, _) >> [[authorized: true,
                                                                                    action    : AuthConstants.ACTION_READ,
                                                                                    resource  : [group: job1.groupPath, name: job1.jobName]]]
-        1 * controller.scheduledExecutionService.listWorkflows(_) >> [schedlist: [job1]]
+        1 * controller.scheduledExecutionService.listWorkflows(_,_) >> [schedlist: [job1]]
         1 * controller.scheduledExecutionService.finishquery(_, _, _) >> [max           : 20,
                                                                           offset        : 0,
                                                                           paginateParams: [:],
@@ -1256,58 +1378,9 @@ class MenuControllerSpec extends Specification {
 
         then:
         model
-        model.users
-        model.users.admin
-        model.users.admin.login=='admin'
 
     }
 
-    def "user summary with last exec"() {
-        given:
-        UserAndRolesAuthContext auth = Mock(UserAndRolesAuthContext)
-        controller.frameworkService=Mock(FrameworkService){
-            1 * getAuthContextForSubject(_)>>auth
-            1 * authorizeApplicationResourceType(_,_,_) >> true
-        }
-        def userToSearch = 'admin'
-        def email = 'test@test.com'
-        def text = '{email:\''+email+'\',firstName:\'The\', lastName:\'Admin\'}'
-        User u = new User(login: userToSearch)
-        u.save()
-
-        ScheduledExecution job = new ScheduledExecution(
-                jobName: 'blue',
-                project: 'AProject',
-                groupPath: 'some/where',
-                description: 'a job',
-                argString: '-a b -c d',
-                workflow: new Workflow(
-                        keepgoing: true,
-                        commands: [new CommandExec(
-                                [adhocRemoteString: 'test buddy', argString: '-delay 12 -monkey cheese -particle']
-                        )]
-                ),
-                retry: '1'
-        )
-        job.save()
-        def exec = new Execution(
-                scheduledExecution: job,
-                dateStarted: new Date(),
-                dateCompleted: null,
-                user: userToSearch,
-                project: 'AProject'
-        ).save()
-
-        when:
-        def model = controller.userSummary()
-
-        then:
-        model
-        model.users
-        model.users.admin
-        model.users.admin.lastJob
-
-    }
 
     def "api job forecast xml"() {
         given:
@@ -1315,15 +1388,18 @@ class MenuControllerSpec extends Specification {
         def testUUID2 = UUID.randomUUID().toString()
         controller.apiService = Mock(ApiService)
         controller.frameworkService = Mock(FrameworkService)
-        controller.scheduledExecutionService = Mock(ScheduledExecutionService){
-            createTrigger(_) >> org.quartz.TriggerBuilder.newTrigger().build();
-        }
+        controller.scheduledExecutionService = Mock(ScheduledExecutionService)
         ScheduledExecution job1 = new ScheduledExecution(createJobParams(jobName: 'job1', uuid:testUUID))
         job1.serverNodeUUID = testUUID2
         job1.totalTime=200*1000
         job1.execCount=100
         job1.scheduled=true
         job1.save()
+        def jobSchedulesService = Mock(JobSchedulesService){
+            shouldScheduleExecution(_) >> job1.shouldScheduleExecution()
+        }
+        controller.jobSchedulesService = jobSchedulesService
+        controller.scheduledExecutionService.jobSchedulesService = jobSchedulesService
 
         when:
         params.id=testUUID
@@ -1357,15 +1433,18 @@ class MenuControllerSpec extends Specification {
         def testUUID2 = UUID.randomUUID().toString()
         controller.apiService = Mock(ApiService)
         controller.frameworkService = Mock(FrameworkService)
-        controller.scheduledExecutionService = Mock(ScheduledExecutionService){
-            createTrigger(_) >> org.quartz.TriggerBuilder.newTrigger().build();
-        }
+        controller.scheduledExecutionService = Mock(ScheduledExecutionService)
         ScheduledExecution job1 = new ScheduledExecution(createJobParams(jobName: 'job1', uuid:testUUID))
         job1.serverNodeUUID = testUUID2
         job1.totalTime=200*1000
         job1.execCount=100
         job1.scheduled=true
         job1.save()
+        def jobSchedulesService = Mock(JobSchedulesService){
+            shouldScheduleExecution(_) >> job1.shouldScheduleExecution()
+        }
+        controller.jobSchedulesService = jobSchedulesService
+        controller.scheduledExecutionService.jobSchedulesService = jobSchedulesService
 
         when:
         params.id=testUUID
@@ -1402,15 +1481,18 @@ class MenuControllerSpec extends Specification {
         def testUUID2 = UUID.randomUUID().toString()
         controller.apiService = Mock(ApiService)
         controller.frameworkService = Mock(FrameworkService)
-        controller.scheduledExecutionService = Mock(ScheduledExecutionService){
-            createTrigger(_) >> org.quartz.TriggerBuilder.newTrigger().build();
-        }
+        controller.scheduledExecutionService = Mock(ScheduledExecutionService)
         ScheduledExecution job1 = new ScheduledExecution(createJobParams(jobName: 'job1', uuid:testUUID))
         job1.serverNodeUUID = testUUID2
         job1.totalTime=200*1000
         job1.execCount=100
         job1.scheduled=true
         job1.save()
+        def jobSchedulesService = Mock(JobSchedulesService){
+            shouldScheduleExecution(_) >> job1.shouldScheduleExecution()
+        }
+        controller.jobSchedulesService = jobSchedulesService
+        controller.scheduledExecutionService.jobSchedulesService = jobSchedulesService
 
         when:
         request.api_version = 32
@@ -1441,4 +1523,5 @@ class MenuControllerSpec extends Specification {
         response.json.futureScheduledExecutions != null
         response.json.futureScheduledExecutions.size() == 1
     }
+
 }

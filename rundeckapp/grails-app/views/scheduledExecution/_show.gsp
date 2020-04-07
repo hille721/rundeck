@@ -45,7 +45,7 @@
             </section>
         </div>
 
-        <div class="subtitle-head-item  flex-container column flex-justify-space-between flex-align-items-flex-end">
+        <div class="subtitle-head-item flex-item flex-grow-1 flex-container column flex-justify-space-between flex-align-items-flex-end">
 
             <div class="job-action-button ">
                 <g:render template="/scheduledExecution/jobActionButton"
@@ -82,7 +82,7 @@
                                 <ul class="nav nav-tabs" id="detailtabs">
                                     <g:if test="${rundoctext}">
                                         <li class="active">
-                                            <a href="#runbook" data-toggle="tab"><g:message code="runbook"/></a>
+                                            <a href="#readme" data-toggle="tab"><g:message code="runbook"/></a>
                                         </li>
                                     </g:if>
                                     <li class="${rundoctext ? '' : 'active'}">
@@ -96,11 +96,11 @@
                             <div data-ko-bind="jobNodeFilters" id="detailtable"
                                  class="tab-pane ${rundoctext ? '' : 'active'}">
                                 <g:render template="/execution/execDetails"
-                                          model="[execdata: scheduledExecution, strategyPlugins: strategyPlugins, showEdit: true, hideOptions: true, knockout: true]"/>
+                                          model="[execdata: scheduledExecution, isScheduled:isScheduled, strategyPlugins: strategyPlugins, showEdit: true, hideOptions: true, knockout: true]"/>
                             </div>
 
                             <g:if test="${rundoctext}">
-                                <div id="runbook" class="tab-pane  active">
+                                <div id="readme" class="tab-pane  active">
                                     <div class="markdeep">${rundoctext}</div>
                                 </div>
                             </g:if>
@@ -128,7 +128,7 @@
 
                         <div class="tab-pane active" id="runjob">
                             <tmpl:execOptionsForm
-                                    model="${[scheduledExecution: scheduledExecution, crontab: crontab, authorized: authorized]}"
+                                    model="${[scheduledExecution: scheduledExecution, crontab: crontab, authorized: authorized,isScheduled:isScheduled]}"
                                     hideHead="${true}"
                                     hideCancel="${true}"
                                     defaultFollow="${true}"/>

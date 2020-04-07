@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+@import "../paper/variables";
 
 .table.item_details {
 
@@ -77,6 +78,7 @@
 .job_list_row,
 .job_list_group_header {
   clear: both;
+  cursor: pointer;
 }
 
 .job_list_group_header {
@@ -125,7 +127,8 @@
   white-space: nowrap;
 }
 
-.exec-args-section.argstring-scrollable  .optkey , .exec-args-section.argstring-scrollable  .optvalue{
+.exec-args-section.argstring-scrollable .optkey,
+.exec-args-section.argstring-scrollable .optvalue {
   display: block;
 }
 

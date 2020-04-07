@@ -52,7 +52,9 @@ import com.dtolabs.rundeck.plugins.jobs.JobPreExecutionEventImpl
 import com.dtolabs.rundeck.plugins.logging.LogFilterPlugin
 import com.dtolabs.rundeck.plugins.scm.JobChangeEvent
 import grails.events.EventPublisher
+import grails.events.annotation.Publisher
 import grails.events.annotation.Subscriber
+import grails.gorm.services.Service
 import grails.gorm.transactions.NotTransactional
 import grails.gorm.transactions.Transactional
 import grails.web.mapping.LinkGenerator
@@ -64,6 +66,7 @@ import org.grails.web.json.JSONObject
 import org.hibernate.StaleObjectStateException
 import org.hibernate.criterion.CriteriaSpecification
 import org.hibernate.type.StandardBasicTypes
+import org.rundeck.app.components.jobs.JobQuery
 import org.rundeck.core.auth.AuthConstants
 import org.rundeck.storage.api.StorageException
 import org.rundeck.util.Sizes
@@ -415,10 +418,17 @@ class ExecutionService implements ApplicationContextAware, StepExecutor, NodeSte
 
                 //running status filter.
                 if (query.runningFilter) {
-                    if (EXECUTION_SCHEDULED == query.runningFilter) {
+                    Date now = new Date()
+                    if (EXECUTION_SCHEDULED == query.runningFilter ) {
                         eq('status', EXECUTION_SCHEDULED)
                     } else if ('running' == query.runningFilter) {
-                        isNull('dateCompleted')
+                        and{
+                            isNull('dateCompleted')
+                            if(!query.considerPostponedRunsAsRunningFilter){
+                                le('dateStarted', now)
+                                ne('status', EXECUTION_SCHEDULED)
+                            }
+                        }
                     } else {
                         and {
                             eq('status', 'completed' == query.runningFilter ? 'true' : 'false')
@@ -1220,6 +1230,9 @@ class ExecutionService implements ApplicationContextAware, StepExecutor, NodeSte
      * @return
      */
     boolean canReadStoragePassword(AuthContext authContext, String storagePath, boolean failIfMissing){
+        if(storagePath?.contains('${')){
+            return true;//bypass validation if uses an execution variable
+        }
         def keystore = storageService.storageTreeWithContext(authContext)
         try {
             return keystore.hasPassword(storagePath)
@@ -1425,8 +1438,16 @@ class ExecutionService implements ApplicationContextAware, StepExecutor, NodeSte
 
         def Map<String,Map<String,String>> datacontext = new HashMap<String,Map<String,String>>()
 
+        // Put globals in context.
+        Map<String, String> globals = frameworkService.getProjectGlobals(origContext?.frameworkProject?:execMap.project);
+        datacontext.put("globals", globals ? globals : new HashMap<>());
+
         //add delimiter to option variables
         if(null !=optsmap){
+
+            //replaces options values by global ones.
+            optsmap.putAll(DataContextUtils.replaceDataReferences(optsmap, datacontext))
+
             def se=null
             if(execMap  instanceof Execution && null!=execMap.scheduledExecution){
                 se=execMap.scheduledExecution
@@ -1451,10 +1472,6 @@ class ExecutionService implements ApplicationContextAware, StepExecutor, NodeSte
             datacontext.put("nodeDeferred", secureOptionNodeDeferred.clone())
         }
         datacontext.put("job",jobcontext?jobcontext:new HashMap<String,String>())
-
-        // Put globals in context.
-        Map<String, String> globals = frameworkService.getProjectGlobals(origContext?.frameworkProject?:execMap.project);
-        datacontext.put("globals", globals ? globals : new HashMap<>());
 
 
         NodesSelector nodeselector
@@ -2173,7 +2190,8 @@ class ExecutionService implements ApplicationContextAware, StepExecutor, NodeSte
                     e,
                     secureOpts,
                     secureOptsExposed,
-                    startTime
+                    startTime,
+                    true
             )
             if (nextRun != null) {
                 return [success: true, id: e.id, executionId: e.id,
@@ -2231,7 +2249,6 @@ class ExecutionService implements ApplicationContextAware, StepExecutor, NodeSte
      * @param secureExposedOpts
      * @return execution
      */
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
     Execution int_createExecution(
             ScheduledExecution se,
             UserAndRolesAuthContext authContext,
@@ -2259,13 +2276,15 @@ class ExecutionService implements ApplicationContextAware, StepExecutor, NodeSte
                 'workflow',
                 'argString',
                 'timeout',
-                'orchestrator',
                 'retry',
                 'retryDelay',
                 'excludeFilterUncheck'
         ]
         propset.each{k->
             props.put(k,se[k])
+        }
+        if(se.orchestrator) {
+            props["orchestrator"] = new Orchestrator(se.orchestrator.toMap())
         }
         props.user = authContext.username
         def roles = authContext.roles
@@ -2407,6 +2426,7 @@ class ExecutionService implements ApplicationContextAware, StepExecutor, NodeSte
      * @return
      * @throws ExecutionServiceException
      */
+    @Publisher
     def Execution createExecution(
             ScheduledExecution se,
             UserAndRolesAuthContext authContext,
@@ -2705,7 +2725,8 @@ class ExecutionService implements ApplicationContextAware, StepExecutor, NodeSte
                     }
                 }
                 if(opt.enforced && !(opt.optionValues || opt.optionValuesPluginType)){
-                    Map remoteOptions = scheduledExecutionService.loadOptionsRemoteValues(scheduledExecution, [option: opt.name], authContext?.username)
+                    Map remoteOptions = scheduledExecutionService.loadOptionsRemoteValues(scheduledExecution,
+                            [option: opt.name, extra: [option: optparams]], authContext?.username)
                     if(!remoteOptions.err && remoteOptions.values){
                         opt.optionValues = remoteOptions.values.collect { optValue ->
                             if (optValue instanceof Map) {
@@ -2811,6 +2832,14 @@ class ExecutionService implements ApplicationContextAware, StepExecutor, NodeSte
 
             if (schedId) {
                 scheduledExecution = ScheduledExecution.get(schedId)
+            }
+
+            //check the final status of succeeded nodes
+            List effectiveSuccessNodeList = getEffectiveSuccessNodeList(execution)
+            if(effectiveSuccessNodeList){
+                execution.succeededNodeList = effectiveSuccessNodeList.join(",")
+            }else{
+                execution.succeededNodeList = null
             }
 
             if (!execution.cancelled && !(execution.statusSucceeded()) && scheduledExecution && retryContext) {
@@ -3689,16 +3718,18 @@ class ExecutionService implements ApplicationContextAware, StepExecutor, NodeSte
                     executionLifecyclePluginExecHandler
             )
 
-            thread.start()
 
-            if(!jitem.ignoreNotifications) {
-                ScheduledExecution.withTransaction {
-                    // Get a new object attached to the new session
-                    def scheduledExecution = ScheduledExecution.get(id)
-                    notificationService.triggerJobNotification('start', scheduledExecution,
-                            [execution: exec, context: newContext, jobref: jitem.jobIdentifier])
+            if(!exec.abortedby){
+                thread.start()
+                if (!jitem.ignoreNotifications) {
+                    ScheduledExecution.withTransaction {
+                        // Get a new object attached to the new session
+                        def scheduledExecution = ScheduledExecution.get(id)
+                        notificationService.triggerJobNotification('start', scheduledExecution,
+                                [execution: exec, context: newContext, jobref: jitem.jobIdentifier])
+                    }
+
                 }
-
             }
             return executionUtilService.runRefJobWithTimer(thread, startTime, shouldCheckTimeout, timeoutms)
 
@@ -3824,10 +3855,11 @@ class ExecutionService implements ApplicationContextAware, StepExecutor, NodeSte
    * @return result map [total: int, result: List<Execution>]
    */
   def queryExecutions(ExecutionQuery query, int offset = 0, int max = -1) {
+    def jobQueryComponents = applicationContext.getBeansOfType(JobQuery)
     def criteriaClos = { isCount ->
 
       // Run main query criteria
-      def queryCriteria = query.createCriteria(delegate)
+      def queryCriteria = query.createCriteria(delegate, jobQueryComponents)
       queryCriteria()
 
       if (!isCount) {
@@ -3857,11 +3889,11 @@ class ExecutionService implements ApplicationContextAware, StepExecutor, NodeSte
     def queryExecutionMetrics(ExecutionQuery query) {
 
         // Prepare Query Criteria
-
+        def jobQueryComponents = applicationContext.getBeansOfType(JobQuery)
         def metricCriteria = {
 
             // Run main query criteria
-            def baseQueryCriteria = query.createCriteria(delegate)
+            def baseQueryCriteria = query.createCriteria(delegate, jobQueryComponents)
             baseQueryCriteria()
 
             resultTransformer(CriteriaSpecification.ALIAS_TO_ENTITY_MAP)
@@ -4017,5 +4049,21 @@ class ExecutionService implements ApplicationContextAware, StepExecutor, NodeSte
         } catch (JobLifecyclePluginException jpe) {
             throw new ExecutionServiceValidationException(jpe.message, optparams, null)
         }
+    }
+
+    def getEffectiveSuccessNodeList(Execution e){
+        def modifiedSuccessNodeList = []
+        if(e.succeededNodeList) {
+            List<String> successNodeList = e.succeededNodeList?.split(',')
+            def nodeSummary = workflowService.requestStateSummary(e, successNodeList)
+            if(nodeSummary) {
+                successNodeList.each { node ->
+                    if (nodeSummary.workflowState.nodeSummaries[node]?.summaryState == 'SUCCEEDED') {
+                        modifiedSuccessNodeList.add(node)
+                    }
+                }
+            }
+        }
+        modifiedSuccessNodeList
     }
 }

@@ -1,12 +1,14 @@
 package rundeck.services
 
 import com.dtolabs.rundeck.core.common.IFramework
+import com.dtolabs.rundeck.core.encrypter.PasswordUtilityEncrypterPlugin
 import com.dtolabs.rundeck.core.plugins.PluginUtils
 import com.dtolabs.rundeck.core.plugins.configuration.Description
 import com.dtolabs.rundeck.core.plugins.configuration.Property
 import com.dtolabs.rundeck.core.plugins.configuration.PropertyScope
 import com.dtolabs.rundeck.core.resources.ResourceModelSourceFactory
 import com.dtolabs.rundeck.plugins.ServiceNameConstants
+import com.dtolabs.rundeck.plugins.audit.AuditEventListenerPlugin
 import com.dtolabs.rundeck.plugins.file.FileUploadPlugin
 import com.dtolabs.rundeck.plugins.logging.LogFilterPlugin
 import com.dtolabs.rundeck.plugins.logs.ContentConverterPlugin
@@ -47,6 +49,7 @@ class PluginApiService {
     FeatureService featureService
     ExecutionLifecyclePluginService executionLifecyclePluginService
     JobLifecyclePluginService jobLifecyclePluginService
+    def rundeckPluginRegistry
 
     def listPluginsDetailed() {
         //list plugins and config settings for project/framework props
@@ -90,6 +93,10 @@ class PluginApiService {
                 it.value.description
             }.sort { a, b -> a.name <=> b.name }
         }
+
+        pluginDescs['PasswordUtilityEncrypter'] = pluginService.listPlugins(PasswordUtilityEncrypterPlugin).collect {
+            it.value.description
+        }.sort { a, b -> a.name <=> b.name }
 
         //web-app level plugin descriptions
         if(featureService.featurePresent("jobLifecyclePlugin")) {
@@ -148,6 +155,10 @@ class PluginApiService {
         pluginDescs['WebhookEvent']=pluginService.listPlugins(WebhookEventPlugin).collect {
             it.value.description
         }.sort { a, b -> a.name <=> b.name }
+        pluginDescs[ServiceNameConstants.AuditEventListener] = pluginService.listPlugins(AuditEventListenerPlugin).collect {
+            it.value.description
+        }.sort { a, b -> a.name <=> b.name }
+
 
         Map<String,Map> uiPluginProfiles = [:]
         def loadedFileNameMap=[:]
@@ -235,9 +246,7 @@ class PluginApiService {
         def tersePluginList = pluginList.descriptions.collect {
             String service = it.key
             def providers = it.value.collect { provider ->
-                def meta = frameworkService.getRundeckFramework().
-                        getPluginManager().
-                        getPluginMetadata(service, provider.name)
+                def meta = rundeckPluginRegistry.getPluginMetadata(service, provider.name)
                 boolean builtin = meta == null
                 String ver = meta?.pluginFileVersion ?: appVer
                 String dte = meta?.pluginDate ?: appDate
@@ -324,9 +333,7 @@ class PluginApiService {
         def idList = [:]
         def plugins = pluginService.listPlugins(UIPlugin, uiPluginProviderService)
         plugins.each{ entry ->
-            def meta = frameworkService.getRundeckFramework().
-                    getPluginManager().
-                    getPluginMetadata("UI", entry.key)
+            def meta = rundeckPluginRegistry.getPluginMetadata("UI", entry.key)
             String id = meta?.pluginId ?: PluginUtils.generateShaIdFromName(entry.key)
             idList[id] = meta?.pluginFileVersion ?: "1.0.0"
         }

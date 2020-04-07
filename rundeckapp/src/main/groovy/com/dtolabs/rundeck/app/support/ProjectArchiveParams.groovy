@@ -34,7 +34,6 @@ class ProjectArchiveParams implements ProjectArchiveImportRequest, Validateable{
     Boolean importConfig=false
     Boolean importACL=false
     Boolean importScm=false
-    Boolean importWebhooks=false
     Boolean validateJobref=false
     Boolean exportAll
     Boolean exportJobs
@@ -43,7 +42,10 @@ class ProjectArchiveParams implements ProjectArchiveImportRequest, Validateable{
     Boolean exportReadmes
     Boolean exportAcls
     Boolean exportScm
-    Boolean exportWebhooks
+    Map<String, Boolean> importComponents
+    Map<String, Map<String, String>> importOpts
+    Map<String, Boolean> exportComponents
+    Map<String, Map<String, String>> exportOpts
     String stripJobRef
 
     static constraints={
@@ -53,7 +55,6 @@ class ProjectArchiveParams implements ProjectArchiveImportRequest, Validateable{
         importConfig(nullable: true)
         importACL(nullable: true)
         importScm(nullable: true)
-        importWebhooks(nullable: true)
         exportAll(nullable: true)
         exportJobs(nullable: true)
         exportExecutions(nullable: true)
@@ -61,11 +62,52 @@ class ProjectArchiveParams implements ProjectArchiveImportRequest, Validateable{
         exportReadmes(nullable: true)
         exportAcls(nullable: true)
         exportScm(nullable: true)
-        exportWebhooks(nullable: true)
         stripJobRef(nullable: true)
+        importOpts(nullable: true)
+        exportOpts(nullable: true)
+        exportComponents(nullable: true)
+        importComponents(nullable: true)
     }
 
-    ArchiveOptions toArchiveOptions() {
+    void cleanComponentOpts(){
+        if(exportComponents) {
+            exportComponents = cleanBooleanMap(exportComponents)
+        }
+        if(importComponents) {
+            importComponents = cleanBooleanMap(importComponents)
+        }
+        if(exportOpts){
+            exportOpts=cleanMapData(exportOpts)
+        }
+        if(importOpts){
+            importOpts=cleanMapData(importOpts)
+        }
+    }
+
+    public LinkedHashMap<String, Boolean> cleanBooleanMap(Map<String, Boolean> components) {
+        Map<String, Boolean> nexportComponents = [:]
+        components.each { k, v ->
+            if (v && v in ['true', true]) {
+                nexportComponents[k] = true
+            } else {
+                nexportComponents[k] = false
+            }
+        }
+        nexportComponents
+    }
+
+    public Map<String, Map<String, String>> cleanMapData(Map<String, Map<String, String>> opts) {
+        Map<String, Map<String, String>> nexportOpts = [:]
+        opts.each { k, v ->
+            if (!k.contains('.') && v instanceof Map) {
+                nexportOpts[k] = new HashMap<>(v)
+            }
+        }
+        nexportOpts
+    }
+
+    ProjectArchiveExportRequest toArchiveOptions() {
+        cleanComponentOpts()
         new ArchiveOptions(
                 all: exportAll ?: false,
                 jobs: exportJobs ?: false,
@@ -74,8 +116,9 @@ class ProjectArchiveParams implements ProjectArchiveImportRequest, Validateable{
                 readmes: exportReadmes ?: false,
                 acls: exportAcls ?: false,
                 scm: exportScm ?: false,
-                webhooks: exportWebhooks ?: false,
-                stripJobRef: stripJobRef
+                stripJobRef: stripJobRef,
+                exportOpts: exportOpts,
+                exportComponents: exportComponents
         )
     }
 

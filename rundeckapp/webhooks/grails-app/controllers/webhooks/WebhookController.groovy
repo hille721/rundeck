@@ -13,7 +13,7 @@ import javax.servlet.http.HttpServletResponse
 import static webhooks.WebhookConstants.*
 
 class WebhookController {
-    private static final ObjectMapper mapper = new ObjectMapper()
+    static allowedMethods = [post:'POST']
 
     def webhookService
     def frameworkService
@@ -111,8 +111,7 @@ class WebhookController {
     }
 
     def post() {
-        String token = params.authtoken
-        Webhook hook = webhookService.getWebhookByToken(token)
+        Webhook hook = webhookService.getWebhookByToken(Webhook.cleanAuthToken(params.authtoken))
 
         if(!hook) {
             sendJsonError("Webhook not found")

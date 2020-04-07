@@ -54,8 +54,10 @@ class Execution extends ExecutionContext implements EmbeddedJsonData {
     Long retryPrevId
     String extraMetadata
 
+    boolean serverNodeUUIDChanged = false
+
     static hasOne = [logFileStorageRequest: LogFileStorageRequest]
-    static transients = ['executionState', 'customStatusString', 'userRoles', 'extraMetadataMap']
+    static transients = ['executionState', 'customStatusString', 'userRoles', 'extraMetadataMap', 'serverNodeUUIDChanged']
     static constraints = {
         project(matches: FrameworkResource.VALID_RESOURCE_NAME_REGEX, validator:{val,Execution obj->
             if(obj.scheduledExecution && obj.scheduledExecution.project!=val){
@@ -154,6 +156,7 @@ class Execution extends ExecutionContext implements EmbeddedJsonData {
             index 'EXEC_IDX_3', ['project', 'dateCompleted']
             index 'EXEC_IDX_4', ['dateCompleted', 'scheduledExecution']
             index 'EXEC_IDX_5', ['scheduledExecution', 'status']
+            index 'EXEC_IDX_6', ['user','dateStarted']
         }
     }
 
@@ -169,6 +172,14 @@ class Execution extends ExecutionContext implements EmbeddedJsonData {
         }
         lastExecutionByUser{ user ->
             eq 'user', user
+            maxResults 1
+            order 'dateStarted', 'desc'
+        }
+        lastExecutionDateByUser { user ->
+            eq 'user', user
+            projections {
+                property 'dateStarted'
+            }
             maxResults 1
             order 'dateStarted', 'desc'
         }
@@ -469,6 +480,10 @@ class Execution extends ExecutionContext implements EmbeddedJsonData {
                 targetNodes: targetNodes,
                 metadata: extraMetadataMap
         )
+    }
+
+    void beforeUpdate() {
+        serverNodeUUIDChanged = this.isDirty('serverNodeUUID')
     }
 }
 

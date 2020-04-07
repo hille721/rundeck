@@ -34,6 +34,7 @@ class WebhookControllerSpec extends Specification implements ControllerUnitTest<
 
         when:
         params.authtoken = "1234"
+        request.method = 'POST'
         controller.post()
 
         then:
@@ -41,7 +42,12 @@ class WebhookControllerSpec extends Specification implements ControllerUnitTest<
         1 * controller.frameworkService.getAuthContextForSubject(_) >> { new SubjectAuthContext(null, null) }
         1 * controller.frameworkService.authorizeProjectResourceAny(_,_,_,_) >> { return true }
         1 * controller.webhookService.processWebhook(_,_,_,_,_) >> { }
-        response.text == '{"msg":"ok"}'
+        response.text == expectedMsg
+
+        where:
+        authtoken   | expectedMsg
+        "1234"      | '{"msg":"ok"}'
+        "1234#test" | '{"msg":"ok"}'
     }
 
     def "post fail when not authorized"() {
@@ -54,6 +60,7 @@ class WebhookControllerSpec extends Specification implements ControllerUnitTest<
 
         when:
         params.authtoken = "1234"
+        request.method = 'POST'
         controller.post()
 
         then:
@@ -68,6 +75,7 @@ class WebhookControllerSpec extends Specification implements ControllerUnitTest<
 
         when:
         params.authtoken = "1234"
+        request.method = 'POST'
         controller.post()
 
         then:
@@ -75,6 +83,31 @@ class WebhookControllerSpec extends Specification implements ControllerUnitTest<
         0 * controller.webhookService.processWebhook(_,_,_,_)
         response.text == '{"err":"Webhook not enabled"}'
         response.status == 503
+    }
+
+    def "POST method is the only valid method"() {
+        given:
+        controller.frameworkService = Mock(AuthContextProcessor)
+        controller.webhookService = Mock(MockWebhookService)
+
+        when:
+        params.authtoken = "1234"
+        request.method = method
+        controller.post()
+
+        then:
+        invocations * controller.webhookService.getWebhookByToken(_) >> { new Webhook(name:"test",authToken: "1234",enabled:true)}
+        invocations * controller.frameworkService.getAuthContextForSubject(_) >> { new SubjectAuthContext(null, null) }
+        invocations * controller.frameworkService.authorizeProjectResourceAny(_,_,_,_) >> { return true }
+        invocations * controller.webhookService.processWebhook(_,_,_,_,_) >> { }
+        response.status == statusCode
+
+        where:
+        method      | statusCode | invocations
+        'POST'      | 200        | 1
+        'GET'       | 405        | 0
+        'PUT'       | 405        | 0
+        'DELETE'    | 405        | 0
     }
 
     interface MockWebhookService {
